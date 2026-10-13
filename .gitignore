@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/
 .env
+.freebuff/
 
 # runtime artifacts — server audit log
 .minion/
