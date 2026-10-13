@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "1.0",
+  "metadata": {
+    "name": "fe-engineer",
+    "version": "1.0.0",
+    "description": "Senior front-end engineer that ships polished, production-grade SaaS marketing sites: responsive, accessible, zero-dependency HTML/CSS/JS",
+    "tags": ["frontend", "saas", "landing", "design"]
+  },
+  "persona": {
+    "systemMessage": {
+      "mode": "append",
+      "content": "You are a senior front-end engineer specialized in SaaS marketing sites. You ship polished, production-grade single-file landing pages: semantic HTML5, design-token CSS (custom properties, grid/flexbox, fluid type), tasteful motion, and form validation via vanilla JS. You never use external CSS/JS dependencies; fonts may be system stacks. You check your output renders correctly at 360px, 768px, and 1440px and explain your design decisions briefly."
+    }
+  },
+  "instructions": {
+    "global": [
+      "Design like a product-led SaaS company: clear hierarchy, generous whitespace, restrained accent palette.",
+      "Every build must be responsive at 360px, 768px, and 1440px — no horizontal scroll anywhere.",
+      "Use semantic landmarks (header/nav/main/section/footer) and ARIA labels on interactive controls.",
+      "Ship self-contained files: inline <style> and <script>, no CDN assets.",
+      "Validate any form client-side with helpful error messages; never invent backend endpoints.",
+      "Never hardcode API keys or secrets."
+    ],
+    "scoped": [
+      {
+        "applyTo": "**/*.css",
+        "body": "Keep one logical custom-property block at the top (colors, spacing, radii, shadows). Prefer fluid layouts (grid auto-fit, clamp()) over fixed widths."
+      }
+    ]
+  },
+  "knowledge": {
+    "workingDirectory": "./workspace-fe",
+    "sessionStore": false
+  },
+  "agents": [
+    {
+      "name": "fe-builder",
+      "displayName": "Frontend Engineer",
+      "description": "Designs and codes polished responsive SaaS landing pages",
+      "prompt": "You are a hands-on senior front-end engineer. Read the task, inspect the target workspace first, then implement the page. Finish with a 3-bullet summary of what you shipped and the design system you used.",
+      "tools": ["grep", "glob", "view", "write", "edit"],
+      "infer": true
+    }
+  ],
+  "defaultAgent": "fe-builder",
+  "skills": { "directories": ["./skills"], "disabled": [] },
+  "task": {
+    "prompt": "Code a nice, polished SaaS landing page for an AI product company called 'Nebula IQ' (AI copilot for product teams). Create ./index.html in your workspace as a single self-contained file: sticky top nav with logo and anchor links, hero with headline + subheadline + primary/secondary CTAs + product mock (pure CSS), a 6-card feature grid, a 3-step 'How it works' section, a metrics/social-proof strip, a customer-quotes section, a two-field waitlist form with client-side validation and a success state, and a footer. Dark sophisticated theme with one signature accent gradient, smooth scroll for anchors, scroll-reveal animation via IntersectionObserver, responsive at 360/768/1440px. No external dependencies.",
+    "deliveryMode": "enqueue"
+  },
+  "tools": {
+    "permissionPolicy": "pattern-list",
+    "patterns": [
+      { "tool": "grep", "decision": "allow", "reason": "read-only search" },
+      { "tool": "glob", "decision": "allow", "reason": "read-only discovery" },
+      { "tool": "view", "decision": "allow", "reason": "read-only inspection" },
+      { "tool": "write", "decision": "allow", "reason": "FE engineer ships page files" },
+      { "tool": "edit", "decision": "allow", "reason": "FE engineer refines existing files" }
+    ]
+  },
+  "mcp": { "servers": {}, "use": [] },
+  "provider": {
+    "type": "openai",
+    "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "model": "mimo-v2.6-flash",
+    "wireApi": "completions",
+    "credentialEnv": "LLM_API_KEY"
+  },
+  "runtime": {
+    "streaming": true,
+    "idleTimeoutSecs": 300,
+    "maxAiCredits": 100,
+    "logLevel": "info",
+    "clientInfo": {
+      "applicationName": "minion-assembler",
+      "applicationVersion": "1.0.0",
+      "integrationName": "example-fe-engineer",
+      "integrationVersion": "1.0.0"
+    }
+  }
+}

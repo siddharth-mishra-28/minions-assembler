@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "1.0",
+  "metadata": {
+    "name": "ui-developer",
+    "version": "1.0.0",
+    "description": "Front-end engineer that builds and improves responsive, accessible web UIs with minimal diffs",
+    "tags": ["frontend", "ui", "web"]
+  },
+  "persona": {
+    "systemMessage": {
+      "mode": "append",
+      "content": "You are a senior UI developer. You build clean, responsive, accessible interfaces with semantic HTML, modern CSS (custom properties, flexbox/grid), and vanilla JS unless a framework is already in the workspace. You explain trade-offs briefly and keep edits minimal and focused."
+    }
+  },
+  "instructions": {
+    "global": [
+      "Prefer small, targeted diffs over rewrites.",
+      "Follow the existing code style and file layout of this workspace.",
+      "Every UI change must work at 360px, 768px, and 1440px wide.",
+      "Use semantic elements and include ARIA labels for interactive controls.",
+      "Never hardcode API keys or secrets in markup or scripts; read them from environment config."
+    ],
+    "scoped": [
+      {
+        "applyTo": "**/*.css",
+        "body": "Keep one logical custom-property block at the top (colors, spacing, radii). Prefer grid/flexbox and auto-fit patterns over fixed widths."
+      }
+    ]
+  },
+  "knowledge": {
+    "workingDirectory": "./workspace-et",
+    "sessionStore": false
+  },
+  "agents": [
+    {
+      "name": "ui-builder",
+      "displayName": "UI Developer",
+      "description": "Builds and refines responsive, accessible web interfaces",
+      "prompt": "You are a hands-on front-end engineer. Read the task, inspect existing files first (grep/glob/view), then implement the change. Summarize what you changed and why in 3 bullets at the end.",
+      "tools": ["grep", "glob", "view", "write", "edit"],
+      "infer": true
+    }
+  ],
+  "defaultAgent": "ui-builder",
+  "skills": { "directories": ["./skills"], "disabled": [] },
+  "task": {
+    "prompt": "Create a single-file product dashboard page at ./out/dashboard.html: dark theme, sticky top bar, a responsive stats grid (4 cards), a table of recent orders, and filters that toggle table rows via vanilla JS. No external CSS/JS dependencies.",
+    "deliveryMode": "enqueue"
+  },
+  "tools": {
+    "permissionPolicy": "pattern-list",
+    "patterns": [
+      { "tool": "grep", "decision": "allow", "reason": "read-only search" },
+      { "tool": "glob", "decision": "allow", "reason": "read-only discovery" },
+      { "tool": "view", "decision": "allow", "reason": "read-only inspection" },
+      { "tool": "write", "decision": "allow", "reason": "UI agent needs to create page files" },
+      { "tool": "edit", "decision": "allow", "reason": "UI agent needs to refine existing files" }
+    ]
+  },
+  "mcp": { "servers": {}, "use": [] },
+  "provider": {
+    "type": "openai",
+    "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "model": "mimo-v2.6-flash",
+    "wireApi": "completions",
+    "credentialEnv": "LLM_API_KEY"
+  },
+  "runtime": {
+    "streaming": true,
+    "idleTimeoutSecs": 300,
+    "maxAiCredits": 100,
+    "logLevel": "info",
+    "clientInfo": {
+      "applicationName": "minion-assembler",
+      "applicationVersion": "1.0.0",
+      "integrationName": "example-ui-developer",
+      "integrationVersion": "1.0.0"
+    }
+  }
+}

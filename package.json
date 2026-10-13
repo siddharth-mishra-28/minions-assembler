@@ -1,0 +1,33 @@
+{
+  "name": "minion-assembler",
+  "version": "1.0.0",
+  "description": "Assemble custom GitHub Copilot agents from versioned JSON — CLI (CI) + serve (API/Swagger/UI) + SQLite audit",
+  "type": "module",
+  "bin": {
+    "minion-assembler": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/swagger": "^9.4.2",
+    "@fastify/swagger-ui": "^5.2.0",
+    "@github/copilot-sdk": "^1.0.19",
+    "ajv": "^8.17.1",
+    "better-sqlite3": "^11.10.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.12.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

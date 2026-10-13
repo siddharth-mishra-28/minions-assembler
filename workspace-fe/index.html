@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebula IQ — The AI copilot for product teams</title>
+<meta name="description" content="Nebula IQ is the AI copilot for product teams: synthesize research, size opportunities, and ship decisions with evidence. Join the waitlist.">
+<meta name="theme-color" content="#06060b">
+<script>document.documentElement.classList.remove('no-js');document.documentElement.classList.add('js');</script>
+<style>
+/* ============================================================
+   Design tokens — one logical block
+   ============================================================ */
+:root{
+  /* color */
+  --bg:#06060b;
+  --bg-raise:#0b0b13;
+  --surface:rgba(255,255,255,.035);
+  --surface-2:rgba(255,255,255,.055);
+  --line:rgba(255,255,255,.09);
+  --line-strong:rgba(255,255,255,.16);
+  --text:#e9e9f2;
+  --text-dim:#9aa0b5;
+  --text-faint:#6d7288;
+  --accent-1:#7b5cff;
+  --accent-2:#38bdf8;
+  --accent-3:#2dd4bf;
+  --accent-soft:rgba(123,92,255,.16);
+  --grad:linear-gradient(115deg,var(--accent-1) 0%,var(--accent-2) 55%,var(--accent-3) 100%);
+  --ok:#34d399;
+  --danger:#fb7185;
+
+  /* typography */
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --fs-hero:clamp(2.35rem,1.45rem + 3.6vw,4.5rem);
+  --fs-h2:clamp(1.85rem,1.35rem + 2vw,2.9rem);
+  --fs-h3:clamp(1.05rem,.98rem + .35vw,1.25rem);
+  --fs-body:clamp(1rem,.97rem + .15vw,1.075rem);
+  --fs-sm:.9rem;
+  --fs-xs:.78rem;
+
+  /* spacing + layout */
+  --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem;
+  --sp-5:1.5rem; --sp-6:2rem; --sp-7:3rem;
+  --container:72rem;
+  --gutter:clamp(1rem,4vw,2rem);
+  --section-y:clamp(4.5rem,3rem + 6vw,7.5rem);
+  --nav-h:4.25rem;
+
+  /* radii */
+  --r-xs:.5rem; --r-sm:.75rem; --r-md:1rem; --r-lg:1.5rem; --r-xl:2rem; --r-pill:999px;
+
+  /* shadows + effects */
+  --sh-sm:0 1px 2px rgba(0,0,0,.4);
+  --sh-md:0 12px 32px -12px rgba(0,0,0,.65);
+  --sh-lg:0 40px 90px -40px rgba(0,0,0,.9);
+  --glow:0 20px 60px -25px rgba(123,92,255,.55);
+  --ring:0 0 0 3px rgba(123,92,255,.35);
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--nav-h) + 1rem);-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  overflow-x:clip;
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--font-sans);
+  font-size:var(--fs-body);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:
+    radial-gradient(60rem 40rem at 80% -10%,rgba(56,189,248,.13),transparent 60%),
+    radial-gradient(55rem 38rem at 8% 4%,rgba(123,92,255,.18),transparent 62%),
+    radial-gradient(50rem 40rem at 50% 110%,rgba(45,212,191,.08),transparent 60%);
+}
+img,svg{display:block;max-width:100%}
+h1,h2,h3,p,ul,ol,figure,blockquote{margin:0}
+ul{padding:0;list-style:none}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--accent-2);outline-offset:3px;border-radius:var(--r-xs)}
+.container{width:100%;max-width:var(--container);margin-inline:auto;padding-inline:var(--gutter)}
+.section{padding-block:var(--section-y)}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.skip-link{
+  position:absolute;left:var(--sp-4);top:-4rem;z-index:100;
+  padding:.6rem 1rem;border-radius:var(--r-pill);
+  background:var(--accent-1);color:#fff;font-weight:600;font-size:var(--fs-sm);
+  transition:top .2s var(--ease);
+}
+.skip-link:focus{top:var(--sp-3)}
+
+/* ============================================================
+   Shared type + UI
+   ============================================================ */
+.eyebrow{
+  display:inline-flex;align-items:center;gap:.5rem;
+  font-family:var(--font-mono);font-size:var(--fs-xs);letter-spacing:.16em;
+  text-transform:uppercase;color:var(--text-dim);
+}
+.eyebrow::before{content:"";inline-size:1.5rem;block-size:2px;background:var(--grad);border-radius:var(--r-pill)}
+.section-head{max-width:46rem;margin-block-end:clamp(2.25rem,4vw,3.5rem)}
+.section-head h2{font-size:var(--fs-h2);line-height:1.12;letter-spacing:-.02em;margin-block:.9rem .75rem}
+.section-head p{color:var(--text-dim);font-size:1.075rem}
+.grad-text{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.muted{color:var(--text-dim)}
+
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:.55rem;
+  padding:.85rem 1.6rem;border:1px solid transparent;border-radius:var(--r-pill);
+  font:inherit;font-size:1rem;font-weight:600;line-height:1.2;cursor:pointer;
+  transition:transform .18s var(--ease),box-shadow .18s var(--ease),background-color .18s var(--ease),border-color .18s var(--ease);
+}
+.btn:hover{transform:translateY(-2px)}
+.btn:active{transform:translateY(0)}
+.btn-primary{background:var(--grad);color:#05060c;box-shadow:var(--glow);background-size:160% 160%}
+.btn-primary:hover{box-shadow:0 26px 70px -25px rgba(123,92,255,.75)}
+.btn-ghost{background:var(--surface);border-color:var(--line-strong);color:var(--text)}
+.btn-ghost:hover{background:var(--surface-2);border-color:rgba(255,255,255,.3)}
+.btn-sm{padding:.6rem 1.15rem;font-size:.9rem}
+.btn svg{flex:none}
+
+/* ============================================================
+   Header / nav
+   ============================================================ */
+.site-header{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(6,6,11,.72);
+  border-block-end:1px solid transparent;
+  transition:border-color .25s var(--ease),background-color .25s var(--ease);
+}
+.site-header.is-stuck{border-block-end-color:var(--line);background:rgba(6,6,11,.88)}
+.nav{display:flex;align-items:center;gap:var(--sp-4);min-block-size:var(--nav-h)}
+.brand{display:inline-flex;align-items:center;gap:.6rem;font-weight:700;letter-spacing:-.02em;font-size:1.075rem;white-space:nowrap}
+.brand-mark{
+  inline-size:1.9rem;block-size:1.9rem;border-radius:.6rem;flex:none;
+  background:var(--grad);box-shadow:0 6px 18px -6px rgba(123,92,255,.8);
+  display:grid;place-items:center;color:#05060c;font-size:.95rem;font-weight:800;
+}
+.brand .iq{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.nav-spacer{flex:1 1 auto}
+.nav-links{display:flex;align-items:center;gap:.35rem}
+.nav-links a{
+  display:block;padding:.5rem .8rem;border-radius:var(--r-pill);
+  font-size:.94rem;color:var(--text-dim);
+  transition:color .18s var(--ease),background-color .18s var(--ease);
+}
+.nav-links a:hover{color:var(--text);background:var(--surface-2)}
+.nav-actions{display:flex;align-items:center;gap:.6rem}
+.nav-toggle{
+  display:none;inline-size:2.5rem;block-size:2.5rem;padding:0;
+  border:1px solid var(--line-strong);border-radius:.7rem;
+  background:var(--surface);color:var(--text);cursor:pointer;
+}
+.nav-toggle span{display:block;inline-size:1.1rem;block-size:2px;margin:3px auto;background:currentColor;border-radius:2px;transition:transform .2s var(--ease),opacity .2s var(--ease)}
+.nav-toggle[aria-expanded="true"] span:nth-child(1){transform:translateY(5px) rotate(45deg)}
+.nav-toggle[aria-expanded="true"] span:nth-child(2){opacity:0}
+.nav-toggle[aria-expanded="true"] span:nth-child(3){transform:translateY(-5px) rotate(-45deg)}
+
+/* ============================================================
+   Hero
+   ============================================================ */
+.hero{padding-block:clamp(3.5rem,2rem + 7vw,6.5rem) var(--section-y)}
+.hero-grid{display:grid;gap:clamp(2.5rem,5vw,4rem);align-items:center;grid-template-columns:1fr}
+.hero-copy{max-width:38rem}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:.55rem;
+  padding:.4rem .9rem .4rem .5rem;border:1px solid var(--line-strong);
+  border-radius:var(--r-pill);background:var(--surface);
+  font-size:var(--fs-xs);color:var(--text-dim);margin-block-end:1.4rem;
+}
+.hero-badge b{
+  padding:.15rem .55rem;border-radius:var(--r-pill);
+  background:var(--grad);color:#05060c;font-weight:700;letter-spacing:.04em;
+}
+.hero h1{font-size:var(--fs-hero);line-height:1.04;letter-spacing:-.03em;text-wrap:balance}
+.hero .lede{margin-block:1.35rem 2rem;font-size:clamp(1.05rem,1rem + .3vw,1.2rem);color:var(--text-dim);max-width:34rem}
+.hero-cta{display:flex;flex-wrap:wrap;gap:.85rem}
+.hero-proof{display:flex;flex-wrap:wrap;align-items:center;gap:1rem;margin-block-start:2rem;color:var(--text-faint);font-size:var(--fs-sm)}
+.avatars{display:flex}
+.avatars span{
+  inline-size:2rem;block-size:2rem;border-radius:50%;
+  display:grid;place-items:center;font-size:.7rem;font-weight:700;color:#05060c;
+  border:2px solid var(--bg);margin-inline-start:-.55rem;
+}
+.avatars span:first-child{margin-inline-start:0}
+.avatars span:nth-child(1){background:linear-gradient(135deg,#7b5cff,#a78bfa)}
+.avatars span:nth-child(2){background:linear-gradient(135deg,#38bdf8,#2dd4bf)}
+.avatars span:nth-child(3){background:linear-gradient(135deg,#2dd4bf,#7b5cff)}
+.avatars span:nth-child(4){background:linear-gradient(135deg,#f0abfc,#7b5cff)}
+
+/* --- pure CSS product mock --- */
+.mock{position:relative;min-width:0}
+.mock-window{
+  position:relative;overflow:hidden;
+  border:1px solid var(--line-strong);border-radius:var(--r-lg);
+  background:linear-gradient(180deg,#101019 0%,#0a0a12 100%);
+  box-shadow:var(--sh-lg),0 0 0 1px rgba(255,255,255,.03) inset;
+}
+.mock-titlebar{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.7rem .9rem;border-block-end:1px solid var(--line);
+  background:rgba(255,255,255,.03);
+}
+.mock-titlebar i{inline-size:.6rem;block-size:.6rem;border-radius:50%;background:#2c2c3a}
+.mock-titlebar i:nth-child(1){background:#ff5f57}
+.mock-titlebar i:nth-child(2){background:#febc2e}
+.mock-titlebar i:nth-child(3){background:#28c840}
+.mock-titlebar p{
+  margin-inline-start:.6rem;font-family:var(--font-mono);font-size:.68rem;
+  color:var(--text-faint);letter-spacing:.04em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.mock-body{display:grid;grid-template-columns:8.5rem 1fr;min-width:0}
+.mock-side{border-inline-end:1px solid var(--line);padding:.85rem .7rem;display:grid;gap:.4rem;align-content:start;background:rgba(255,255,255,.015)}
+.mock-side .m-item{display:flex;align-items:center;gap:.45rem;padding:.4rem .5rem;border-radius:.5rem;font-size:.68rem;color:var(--text-faint);white-space:nowrap}
+.mock-side .m-item::before{content:"";inline-size:.55rem;block-size:.55rem;border-radius:2px;background:#2c2c3a;flex:none}
+.mock-side .m-item.on{background:var(--accent-soft);color:#c9c2ff}
+.mock-side .m-item.on::before{background:var(--grad)}
+.mock-side .m-label{font-family:var(--font-mono);font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;color:#4b4f63;padding-inline:.5rem;margin-block-start:.4rem}
+.mock-main{padding:clamp(.85rem,2vw,1.25rem);display:grid;gap:.9rem;min-width:0}
+.mock-prompt{
+  display:flex;align-items:center;gap:.55rem;
+  padding:.6rem .8rem;border:1px solid var(--line-strong);border-radius:var(--r-pill);
+  background:rgba(255,255,255,.04);font-size:.75rem;color:var(--text-dim);min-width:0;
+}
+.mock-prompt .dot{inline-size:.55rem;block-size:.55rem;border-radius:50%;background:var(--grad);flex:none;animation:pulse 2.4s var(--ease) infinite}
+.mock-prompt span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}
+.mock-reply{border:1px solid var(--line);border-radius:var(--r-md);background:rgba(123,92,255,.07);padding:.75rem .85rem;font-size:.74rem;line-height:1.55;color:var(--text-dim);min-width:0}
+.mock-reply strong{color:var(--text);font-weight:600}
+.mock-reply .tag{
+  display:inline-block;margin:.35rem .3rem 0 0;padding:.12rem .5rem;
+  border-radius:var(--r-pill);background:var(--surface-2);border:1px solid var(--line);
+  font-family:var(--font-mono);font-size:.62rem;color:#9fe7de;
+}
+.mock-chart{
+  border:1px solid var(--line);border-radius:var(--r-md);padding:.8rem .85rem .6rem;
+  background:rgba(255,255,255,.02);min-width:0;
+}
+.mock-chart-head{display:flex;justify-content:space-between;gap:.5rem;font-size:.65rem;color:var(--text-faint);font-family:var(--font-mono);letter-spacing:.06em}
+.mock-chart-head b{color:var(--ok);font-weight:600}
+.mock-bars{display:flex;align-items:flex-end;gap:.32rem;block-size:clamp(58px,9vw,84px);margin-block-start:.65rem}
+.mock-bars i{
+  flex:1;border-radius:3px 3px 0 0;min-inline-size:0;
+  background:linear-gradient(180deg,rgba(123,92,255,.9),rgba(56,189,248,.35));
+  transform-origin:bottom;animation:grow 1.2s var(--ease) both;
+}
+.mock-bars i:nth-child(even){background:linear-gradient(180deg,rgba(56,189,248,.85),rgba(45,212,191,.3))}
+@keyframes grow{from{transform:scaleY(.15);opacity:.3}to{transform:scaleY(1);opacity:1}}
+.mock-float{
+  position:absolute;inset-block-start:-1.1rem;inset-inline-end:clamp(-.5rem,-1vw,0rem);
+  display:flex;align-items:center;gap:.6rem;
+  padding:.6rem .85rem;border:1px solid var(--line-strong);border-radius:var(--r-md);
+  background:rgba(11,11,19,.92);backdrop-filter:blur(8px);
+  box-shadow:var(--sh-md);animation:float 5s ease-in-out infinite;
+}
+.mock-float .ring{
+  inline-size:2.1rem;block-size:2.1rem;border-radius:50%;flex:none;
+  background:conic-gradient(var(--accent-3) 0 78%,rgba(255,255,255,.1) 0);
+  display:grid;place-items:center;font-size:.6rem;font-weight:700;color:#05060c;
+}
+.mock-float .ring i{inline-size:1.6rem;block-size:1.6rem;border-radius:50%;background:#0b0b13;display:grid;place-items:center;color:var(--accent-3);font-style:normal;font-size:.6rem}
+.mock-float b{display:block;font-size:.85rem;line-height:1.2}
+.mock-float small{color:var(--text-faint);font-size:.66rem}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+
+/* ============================================================
+   Features
+   ============================================================ */
+.feature-grid{display:grid;gap:clamp(1rem,2vw,1.35rem);grid-template-columns:1fr}
+.card{
+  position:relative;padding:clamp(1.4rem,2.5vw,1.9rem);
+  border:1px solid var(--line);border-radius:var(--r-lg);
+  background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.015));
+  overflow:hidden;
+  transition:transform .25s var(--ease),border-color .25s var(--ease);
+}
+.card::after{
+  content:"";position:absolute;inset-inline:0;inset-block-start:0;block-size:1px;
+  background:var(--grad);opacity:0;transition:opacity .25s var(--ease);
+}
+.card:hover{transform:translateY(-4px);border-color:var(--line-strong)}
+.card:hover::after{opacity:.9}
+.card .icon{
+  inline-size:2.7rem;block-size:2.7rem;border-radius:.85rem;
+  display:grid;place-items:center;margin-block-end:1.1rem;
+  background:var(--accent-soft);border:1px solid rgba(123,92,255,.35);color:#b3a5ff;
+}
+.card h3{font-size:var(--fs-h3);letter-spacing:-.01em;margin-block-end:.5rem}
+.card p{color:var(--text-dim);font-size:.975rem}
+
+/* ============================================================
+   How it works
+   ============================================================ */
+.steps{display:grid;gap:clamp(1.25rem,3vw,2rem);grid-template-columns:1fr;position:relative}
+.step{position:relative;padding-inline-start:.25rem}
+.step-num{
+  font-family:var(--font-mono);font-size:2.4rem;font-weight:700;line-height:1;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  margin-block-end:.85rem;
+}
+.step h3{font-size:1.15rem;margin-block-end:.5rem;letter-spacing:-.01em}
+.step p{color:var(--text-dim);font-size:.975rem;max-width:30rem}
+.step-line{display:none}
+
+/* ============================================================
+   Metrics / social proof
+   ============================================================ */
+.metrics{
+  border-block:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.008));
+}
+.logo-row{
+  display:flex;flex-wrap:wrap;justify-content:center;gap:.75rem 2.25rem;
+  padding-block-end:clamp(2rem,4vw,3rem);
+}
+.logo-row li{
+  font-family:var(--font-mono);font-size:.85rem;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--text-faint);
+  transition:color .2s var(--ease);
+}
+.logo-row li:hover{color:var(--text-dim)}
+.metric-grid{display:grid;gap:1.5rem;grid-template-columns:repeat(2,1fr);text-align:center}
+.metric b{
+  display:block;font-size:clamp(2rem,1.4rem + 2.6vw,3.25rem);
+  font-weight:800;letter-spacing:-.03em;line-height:1.05;
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.metric span{display:block;margin-block-start:.4rem;font-size:.9rem;color:var(--text-dim)}
+
+/* ============================================================
+   Quotes
+   ============================================================ */
+.quote-grid{display:grid;gap:clamp(1rem,2vw,1.35rem);grid-template-columns:1fr}
+.quote{
+  display:flex;flex-direction:column;gap:1.15rem;
+  padding:clamp(1.4rem,2.5vw,1.9rem);
+  border:1px solid var(--line);border-radius:var(--r-lg);
+  background:var(--surface);
+}
+.quote .mark{font-family:Georgia,serif;font-size:2.75rem;line-height:.6;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.quote blockquote{color:var(--text);font-size:1.02rem;line-height:1.6}
+.quote figcaption{display:flex;align-items:center;gap:.75rem;margin-block-start:auto}
+.quote .who b{display:block;font-size:.92rem;font-weight:600}
+.quote .who span{display:block;font-size:.8rem;color:var(--text-faint)}
+.quote .who .initials{
+  inline-size:2.4rem;block-size:2.4rem;border-radius:50%;flex:none;
+  display:grid;place-items:center;font-size:.8rem;font-weight:700;color:#05060c;
+}
+.quote:nth-child(1) .initials{background:linear-gradient(135deg,#7b5cff,#38bdf8)}
+.quote:nth-child(2) .initials{background:linear-gradient(135deg,#38bdf8,#2dd4bf)}
+.quote:nth-child(3) .initials{background:linear-gradient(135deg,#2dd4bf,#7b5cff)}
+
+/* ============================================================
+   Waitlist
+   ============================================================ */
+.waitlist-card{
+  position:relative;overflow:hidden;
+  padding:clamp(1.75rem,5vw,3.5rem);
+  border:1px solid var(--line-strong);border-radius:var(--r-xl);
+  background:
+    radial-gradient(45rem 20rem at 50% -30%,rgba(123,92,255,.25),transparent 70%),
+    linear-gradient(180deg,#0e0e18,#0a0a12);
+  box-shadow:var(--sh-lg);
+  text-align:center;
+}
+.waitlist-card h2{font-size:var(--fs-h2);letter-spacing:-.02em;line-height:1.12;margin-block:.9rem .7rem;text-wrap:balance}
+.waitlist-card > p{color:var(--text-dim);max-width:34rem;margin-inline:auto}
+.waitlist-form{max-width:31rem;margin:2rem auto 0;text-align:start}
+.field{margin-block-end:1.15rem}
+.field label{display:block;font-size:.85rem;font-weight:600;margin-block-end:.4rem}
+.field input{
+  inline-size:100%;padding:.85rem 1rem;font:inherit;font-size:1rem;
+  color:var(--text);background:rgba(255,255,255,.05);
+  border:1px solid var(--line-strong);border-radius:var(--r-sm);
+  transition:border-color .18s var(--ease),background-color .18s var(--ease),box-shadow .18s var(--ease);
+}
+.field input::placeholder{color:var(--text-faint)}
+.field input:focus{outline:none;border-color:var(--accent-1);box-shadow:var(--ring);background:rgba(255,255,255,.07)}
+.field input[aria-invalid="true"]{border-color:var(--danger);box-shadow:0 0 0 3px rgba(251,113,133,.22)}
+.field-error{min-block-size:1.2rem;margin-block-start:.4rem;font-size:.82rem;color:var(--danger)}
+.form-note{margin-block-start:.9rem;font-size:.8rem;color:var(--text-faint);text-align:center}
+.waitlist-form .btn{inline-size:100%}
+.form-success{
+  display:none;max-width:31rem;margin:2rem auto 0;
+  padding:1.5rem;border:1px solid rgba(52,211,153,.4);
+  border-radius:var(--r-md);background:rgba(52,211,153,.1);
+  text-align:center;
+}
+.form-success.is-visible{display:block;animation:pop .4s var(--ease) both}
+.form-success .check{
+  inline-size:2.75rem;block-size:2.75rem;border-radius:50%;margin:0 auto .8rem;
+  background:var(--grad);display:grid;place-items:center;color:#05060c;
+}
+.form-success h3{font-size:1.15rem;margin-block-end:.35rem}
+.form-success p{color:var(--text-dim);font-size:.94rem}
+@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.site-footer{border-block-start:1px solid var(--line);background:rgba(255,255,255,.015);padding-block:clamp(2.5rem,5vw,4rem) 2rem}
+.footer-grid{display:grid;gap:2rem;grid-template-columns:1fr}
+.footer-brand p{color:var(--text-faint);font-size:.9rem;max-width:24rem;margin-block-start:.9rem}
+.footer-col h4{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--text-faint);margin-block-end:.9rem;font-weight:600}
+.footer-col li + li{margin-block-start:.55rem}
+.footer-col a{font-size:.93rem;color:var(--text-dim);transition:color .18s var(--ease)}
+.footer-col a:hover{color:var(--text)}
+.footer-bottom{
+  display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;justify-content:space-between;
+  margin-block-start:clamp(2rem,4vw,3rem);padding-block-start:1.5rem;
+  border-block-start:1px solid var(--line);font-size:.84rem;color:var(--text-faint);
+}
+
+/* ============================================================
+   Scroll reveal
+   ============================================================ */
+.js .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s var(--ease),transform .7s var(--ease);transition-delay:var(--d,0ms)}
+.js .reveal.is-in{opacity:1;transform:none}
+
+/* ============================================================
+   Responsive — 360 / 768 / 1440
+   ============================================================ */
+@media (min-width:640px){
+  .feature-grid{grid-template-columns:repeat(2,1fr)}
+  .quote-grid{grid-template-columns:repeat(2,1fr)}
+  .metric-grid{grid-template-columns:repeat(4,1fr)}
+  .footer-grid{grid-template-columns:1.6fr repeat(3,1fr)}
+}
+@media (min-width:768px){
+  .steps{grid-template-columns:repeat(3,1fr)}
+}
+@media (min-width:900px){
+  .quote-grid{grid-template-columns:repeat(3,1fr)}
+  .waitlist-form .btn,.form-success{max-width:31rem}
+}
+@media (min-width:1024px){
+  .hero-grid{grid-template-columns:1.02fr .98fr}
+  .feature-grid{grid-template-columns:repeat(3,1fr)}
+}
+
+/* nav collapses below 880px */
+@media (max-width:879px){
+  .nav-toggle{display:block}
+  .nav-links{
+    position:absolute;inset-inline:var(--gutter);inset-block-start:calc(var(--nav-h) - .35rem);
+    flex-direction:column;align-items:stretch;gap:.15rem;
+    padding:.6rem;border:1px solid var(--line-strong);border-radius:var(--r-md);
+    background:rgba(10,10,18,.97);backdrop-filter:blur(16px);
+    box-shadow:var(--sh-md);
+    opacity:0;visibility:hidden;transform:translateY(-8px);
+    transition:opacity .2s var(--ease),transform .2s var(--ease),visibility .2s;
+  }
+  .nav-links.is-open{opacity:1;visibility:visible;transform:none}
+  .nav-links a{padding:.7rem .85rem;font-size:1rem}
+  .nav .nav-cta{display:none}
+}
+@media (max-width:559px){
+  .mock-body{grid-template-columns:1fr}
+  .mock-side{display:none}
+  .mock-float{inset-block-start:-.9rem;inset-inline-end:.35rem}
+  .hero-cta .btn{inline-size:100%}
+}
+@media (max-width:359px){
+  :root{--gutter:.85rem}
+  .hero h1{font-size:2.1rem}
+}
+
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+  .js .reveal{opacity:1;transform:none}
+}
+</style>
+</head>
+<body id="top">
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="site-header" id="site-header">
+  <div class="container nav">
+    <a class="brand" href="#top" aria-label="Nebula IQ home">
+      <span class="brand-mark" aria-hidden="true">N</span>
+      <span>Nebula <span class="iq">IQ</span></span>
+    </a>
+    <nav aria-label="Primary">
+      <ul class="nav-links" id="nav-menu">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#metrics">Impact</a></li>
+        <li><a href="#customers">Customers</a></li>
+        <li><a href="#waitlist">Waitlist</a></li>
+      </ul>
+    </nav>
+    <span class="nav-spacer" aria-hidden="true"></span>
+    <div class="nav-actions">
+      <a class="btn btn-primary btn-sm nav-cta" href="#waitlist">Join the waitlist</a>
+      <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-menu" aria-label="Open navigation menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="container hero-grid">
+      <div class="hero-copy reveal">
+        <p class="hero-badge"><b>NEW</b> Nebula IQ 0.9 private beta</p>
+        <h1 id="hero-title">The AI copilot that turns product <span class="grad-text">noise into decisions</span>.</h1>
+        <p class="lede">Nebula IQ reads your research, tickets, and metrics — then hands your team a ranked, evidence-backed answer in seconds. Less tab-hopping, more shipping.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#waitlist">
+            Join the waitlist
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="#how">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+            See how it works
+          </a>
+        </div>
+        <div class="hero-proof">
+          <div class="avatars" aria-hidden="true"><span>AK</span><span>RM</span><span>JD</span><span>SL</span></div>
+          <p>Trusted by 300+ PMs, designers &amp; engineers in private beta</p>
+        </div>
+      </div>
+
+      <div class="mock reveal" style="--d:120ms" aria-hidden="true">
+        <div class="mock-window">
+          <div class="mock-titlebar"><i></i><i></i><i></i><p>nebula-iq · workspace / atlas</p></div>
+          <div class="mock-body">
+            <div class="mock-side">
+              <div class="m-label">Copilot</div>
+              <div class="m-item on">Ask Nebula</div>
+              <div class="m-item">Discovery</div>
+              <div class="m-item">Signals</div>
+              <div class="m-label">Workspace</div>
+              <div class="m-item">Roadmap</div>
+              <div class="m-item">Experiments</div>
+              <div class="m-item">Memory</div>
+            </div>
+            <div class="mock-main">
+              <div class="mock-prompt"><span class="dot"></span><span>Why did activation dip after the v3 onboarding change?</span></div>
+              <div class="mock-reply">
+                <strong>3 drivers found across 142 sessions + 61 tickets.</strong> Step 2 of onboarding now costs +38s median, and the workspace-import error spikes on mobile.
+                <span class="tag">activation ▼ 6.4%</span><span class="tag">confidence 91%</span><span class="tag">4 sources</span>
+              </div>
+              <div class="mock-chart">
+                <div class="mock-chart-head"><span>Activation · last 14 days</span><b>+18% w/ fix</b></div>
+                <div class="mock-bars">
+                  <i style="height:38%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i>
+                  <i style="height:47%"></i><i style="height:70%"></i><i style="height:58%"></i><i style="height:76%"></i>
+                  <i style="height:64%"></i><i style="height:83%"></i><i style="height:72%"></i><i style="height:92%"></i>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mock-float">
+          <span class="ring"><i>91</i></span>
+          <span><b>Decision ready</b><small>Evidence linked · 4 sources</small></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="container">
+      <div class="section-head reveal">
+        <p class="eyebrow">Capabilities</p>
+        <h2 id="features-title">Everything a product team argues about — <span class="grad-text">settled with evidence</span>.</h2>
+        <p>Six focused workflows that replace the Friday-afternoon scramble across docs, dashboards, and threads.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="card reveal">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h8l-1 8 11-13h-8l1-7z"/></svg></span>
+          <h3>Instant briefs</h3>
+          <p>Turn a fuzzy request into a one-pager: problem, evidence, sizing, risks, and open questions — drafted in under a minute.</p>
+        </article>
+        <article class="card reveal" style="--d:80ms">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg></span>
+          <h3>Signal hub</h3>
+          <p>Connect Linear, Jira, Zendesk, Amplitude, and Gong. Nebula clusters raw feedback into themes with frequency and revenue weight.</p>
+        </article>
+        <article class="card reveal" style="--d:160ms">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></span>
+          <h3>Decision memory</h3>
+          <p>Every call is archived with its rationale and sources, so new hires can ask "why is it like this?" and get a real answer.</p>
+        </article>
+        <article class="card reveal" style="--d:40ms">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></span>
+          <h3>Research synthesis</h3>
+          <p>Drop in 30 interview transcripts. Get themes, verbatim quotes, and confidence bands — with every claim linked back to the timestamp.</p>
+        </article>
+        <article class="card reveal" style="--d:120ms">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+          <h3>Roadmap forecasting</h3>
+          <p>Model the impact of moving a bet up or down. Nebula estimates reach, effort, and risk from your own historical delivery data.</p>
+        </article>
+        <article class="card reveal" style="--d:200ms">
+          <span class="icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6l7-3z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg></span>
+          <h3>Enterprise controls</h3>
+          <p>SSO/SAML, granular roles, audit logs, and zero-training data isolation. Your workspace data never leaves your tenancy.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section" id="how" aria-labelledby="how-title">
+    <div class="container">
+      <div class="section-head reveal">
+        <p class="eyebrow">How it works</p>
+        <h2 id="how-title">Live in an afternoon, not a quarter.</h2>
+        <p>No data-model migration, no prompt-engineering course. Three steps from signup to your first shipped decision.</p>
+      </div>
+      <ol class="steps">
+        <li class="step reveal">
+          <div class="step-num" aria-hidden="true">01</div>
+          <h3>Connect your stack</h3>
+          <p>OAuth into the tools you already use. Nebula indexes history read-only and keeps permissions mirroring your source systems.</p>
+        </li>
+        <li class="step reveal" style="--d:120ms">
+          <div class="step-num" aria-hidden="true">02</div>
+          <h3>Ask in plain language</h3>
+          <p>"What's blocking enterprise expansion?" gets a ranked answer with charts, quotes, and citations — not a generic chatbot essay.</p>
+        </li>
+        <li class="step reveal" style="--d:240ms">
+          <div class="step-num" aria-hidden="true">03</div>
+          <h3>Ship with confidence</h3>
+          <p>Export a decision doc to Notion or Slack, assign the follow-up, and let Nebula track whether the outcome matched the bet.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- Metrics / social proof -->
+  <section class="section metrics" id="metrics" aria-labelledby="metrics-title">
+    <div class="container">
+      <h2 id="metrics-title" class="visually-hidden">Impact and social proof</h2>
+      <ul class="logo-row reveal" aria-label="Teams in private beta">
+        <li>Lumenpath</li><li>Corewave</li><li>Fieldstone</li><li>Monolith</li><li>Brightfold</li><li>Northsignal</li>
+      </ul>
+      <div class="metric-grid">
+        <div class="metric reveal"><b>42%</b><span>faster discovery cycles</span></div>
+        <div class="metric reveal" style="--d:80ms"><b>12k+</b><span>decisions documented weekly</span></div>
+        <div class="metric reveal" style="--d:160ms"><b>300+</b><span>teams on the waitlist</span></div>
+        <div class="metric reveal" style="--d:240ms"><b>4.8/5</b><span>average beta rating</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Customer quotes -->
+  <section class="section" id="customers" aria-labelledby="customers-title">
+    <div class="container">
+      <div class="section-head reveal">
+        <p class="eyebrow">Customers</p>
+        <h2 id="customers-title">Teams that stopped re-litigating old debates.</h2>
+        <p>What beta users say after a month with Nebula IQ in their workflow.</p>
+      </div>
+      <div class="quote-grid">
+        <figure class="quote reveal">
+          <span class="mark" aria-hidden="true">&ldquo;</span>
+          <blockquote>Nebula pulled the "why" behind our activation dip from four tools in about nine seconds. That used to be a two-day analyst request.</blockquote>
+          <figcaption>
+            <span class="initials" aria-hidden="true">AK</span>
+            <span class="who"><b>Amara Kessler</b><span>VP Product, Corewave</span></span>
+          </figcaption>
+        </figure>
+        <figure class="quote reveal" style="--d:100ms">
+          <span class="mark" aria-hidden="true">&ldquo;</span>
+          <blockquote>Our roadmap reviews got shorter and calmer. Every claim now has a citation, so the loudest opinion in the room no longer wins by default.</blockquote>
+          <figcaption>
+            <span class="initials" aria-hidden="true">RM</span>
+            <span class="who"><b>Rohan Mehta</b><span>Group PM, Lumenpath</span></span>
+          </figcaption>
+        </figure>
+        <figure class="quote reveal" style="--d:200ms">
+          <span class="mark" aria-hidden="true">&ldquo;</span>
+          <blockquote>Decision memory is the killer feature. New designers ramp on years of context in a week instead of shadowing six stakeholders.</blockquote>
+          <figcaption>
+            <span class="initials" aria-hidden="true">SL</span>
+            <span class="who"><b>Sofia Lindqvist</b><span>Head of Design, Fieldstone</span></span>
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- Waitlist -->
+  <section class="section" id="waitlist" aria-labelledby="waitlist-title">
+    <div class="container">
+      <div class="waitlist-card reveal">
+        <p class="eyebrow" style="justify-content:center">Private beta</p>
+        <h2 id="waitlist-title">Get your seat before the queue closes.</h2>
+        <p>We onboard 25 teams each week. Tell us where to send your invite — nothing else, ever.</p>
+
+        <form class="waitlist-form" id="waitlist-form" novalidate>
+          <div class="field">
+            <label for="email">Work email</label>
+            <input type="email" id="email" name="email" placeholder="you@company.com" autocomplete="email" aria-describedby="email-error" required>
+            <p class="field-error" id="email-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="company">Company or team</label>
+            <input type="text" id="company" name="company" placeholder="Acme Product Team" autocomplete="organization" aria-describedby="company-error" required>
+            <p class="field-error" id="company-error" role="alert"></p>
+          </div>
+          <button class="btn btn-primary" type="submit">Request early access</button>
+          <p class="form-note">No spam. One email when your seat is ready.</p>
+        </form>
+
+        <div class="form-success" id="form-success" role="status" tabindex="-1">
+          <span class="check" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <h3>You're on the list.</h3>
+          <p id="success-detail">We'll email your invite shortly. Keep an eye on your inbox.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="#top" aria-label="Nebula IQ home">
+          <span class="brand-mark" aria-hidden="true">N</span>
+          <span>Nebula <span class="iq">IQ</span></span>
+        </a>
+        <p>The AI copilot for product teams. Synthesize research, size opportunities, and ship decisions with evidence.</p>
+      </div>
+      <nav class="footer-col" aria-label="Product">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#metrics">Impact</a></li>
+          <li><a href="#waitlist">Waitlist</a></li>
+        </ul>
+      </nav>
+      <nav class="footer-col" aria-label="Company">
+        <h4>Company</h4>
+        <ul>
+          <li><a href="#customers">Customers</a></li>
+          <li><a href="mailto:hello@nebulaiq.example">Contact</a></li>
+          <li><a href="mailto:careers@nebulaiq.example">Careers</a></li>
+        </ul>
+      </nav>
+      <nav class="footer-col" aria-label="Resources">
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="#features">Security</a></li>
+          <li><a href="#how">Documentation</a></li>
+          <li><a href="#waitlist">Changelog</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2026 Nebula IQ, Inc. All rights reserved.</p>
+      <p>Built for product teams who prefer evidence over opinion.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- sticky header shadow ---- */
+  var header = document.getElementById('site-header');
+  var onScroll = function () { header.classList.toggle('is-stuck', window.scrollY > 8); };
+  onScroll();
+  window.addEventListener('scroll', onScroll, { passive: true });
+
+  /* ---- mobile nav ---- */
+  var toggle = document.getElementById('nav-toggle');
+  var menu = document.getElementById('nav-menu');
+  var setMenu = function (open) {
+    menu.classList.toggle('is-open', open);
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
+  };
+  toggle.addEventListener('click', function () {
+    setMenu(toggle.getAttribute('aria-expanded') !== 'true');
+  });
+  menu.addEventListener('click', function (e) {
+    if (e.target.tagName === 'A') setMenu(false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') {
+      setMenu(false);
+      toggle.focus();
+    }
+  });
+  document.addEventListener('click', function (e) {
+    if (toggle.getAttribute('aria-expanded') !== 'true') return;
+    if (!menu.contains(e.target) && !toggle.contains(e.target)) setMenu(false);
+  });
+
+  /* ---- scroll reveal ---- */
+  var revealables = document.querySelectorAll('.reveal');
+  if (reduceMotion || !('IntersectionObserver' in window)) {
+    Array.prototype.forEach.call(revealables, function (el) { el.classList.add('is-in'); });
+  } else {
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-in');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+    Array.prototype.forEach.call(revealables, function (el) { observer.observe(el); });
+  }
+
+  /* ---- waitlist form validation ---- */
+  var form = document.getElementById('waitlist-form');
+  var success = document.getElementById('form-success');
+  var successDetail = document.getElementById('success-detail');
+  var email = document.getElementById('email');
+  var company = document.getElementById('company');
+  var emailError = document.getElementById('email-error');
+  var companyError = document.getElementById('company-error');
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  var showError = function (input, node, message) {
+    input.setAttribute('aria-invalid', 'true');
+    node.textContent = message;
+  };
+  var clearError = function (input, node) {
+    input.removeAttribute('aria-invalid');
+    node.textContent = '';
+  };
+
+  var validateEmail = function () {
+    var value = email.value.trim();
+    if (!value) { showError(email, emailError, 'Please enter your work email so we can send your invite.'); return false; }
+    if (!EMAIL_RE.test(value)) { showError(email, emailError, 'That does not look like a valid email — try something like you@company.com.'); return false; }
+    clearError(email, emailError); return true;
+  };
+  var validateCompany = function () {
+    var value = company.value.trim();
+    if (!value) { showError(company, companyError, 'Please tell us your company or team name.'); return false; }
+    if (value.length < 2) { showError(company, companyError, 'Please enter at least 2 characters.'); return false; }
+    clearError(company, companyError); return true;
+  };
+
+  email.addEventListener('blur', validateEmail);
+  company.addEventListener('blur', validateCompany);
+  email.addEventListener('input', function () { if (email.getAttribute('aria-invalid')) validateEmail(); });
+  company.addEventListener('input', function () { if (company.getAttribute('aria-invalid')) validateCompany(); });
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var okEmail = validateEmail();
+    var okCompany = validateCompany();
+    if (!okEmail || !okCompany) {
+      (okEmail ? company : email).focus();
+      return;
+    }
+    /* No backend endpoint in this static build — success is simulated locally. */
+    var name = company.value.trim();
+    successDetail.textContent = 'Thanks! ' + name + ' is on the list — we\'ll email ' + email.value.trim() + ' when your seat opens up.';
+    form.hidden = true;
+    success.classList.add('is-visible');
+    success.focus();
+  });
+})();
+</script>
+</body>
+</html>

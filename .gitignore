@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+.env
+
+# runtime artifacts — server audit log
+.minion/
+
+# workspace run transcripts (runtime); canonical workspace artifacts stay tracked
+*/runs/
