@@ -22,5 +22,5 @@ export async function startServer(port = 3100, dbPath = './data/minion.db') {
 
 if (process.argv[1]?.endsWith('serve.js')) {
   const port = Number(process.env.PORT ?? 3100);
-  startServer(port).then(() => console.log(`minion-assembler serve on http://127.0.0.1:${port} (docs: /docs)`));
+  startServer(port).then(() => console.log(`minions-assembler serve on http://127.0.0.1:${port} (docs: /docs)`));
 }

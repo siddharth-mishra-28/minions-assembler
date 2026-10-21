@@ -52,10 +52,10 @@
   "mcp": { "servers": {}, "use": [] },
   "provider": {
     "type": "openai",
-    "baseUrl": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "baseUrl": "https://api.xiaomimimo.com/v1",
     "model": "mimo-v2.6-flash",
     "wireApi": "completions",
-    "credentialEnv": "LLM_API_KEY"
+    "providerApiKey": "${MIMO_API_KEY}"
   },
   "runtime": {
     "streaming": true,
@@ -63,7 +63,7 @@
     "maxAiCredits": 100,
     "logLevel": "info",
     "clientInfo": {
-      "applicationName": "minion-assembler",
+      "applicationName": "minions-assembler",
       "applicationVersion": "1.0.0",
       "integrationName": "example-expense-tracker",
       "integrationVersion": "1.0.0"

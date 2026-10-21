@@ -7,5 +7,11 @@ data/
 # runtime artifacts — server audit log
 .minion/
 
-# workspace run transcripts (runtime); canonical workspace artifacts stay tracked
-*/runs/
+# run/chat transcripts and per-run workflow folders (runtime output)
+runs/
+run_*/
+.chats/
+workflow_*/
+
+# agent working directories (runtime output from coding runs)
+workspace-*/
