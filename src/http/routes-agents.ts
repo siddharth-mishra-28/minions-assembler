@@ -66,9 +66,11 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
     if (!body.definitionPath && !body.definition) return reply.code(400).send({ error: 'Body must include definitionPath or definition' });
     try {
       const load = body.definitionPath ? loadAgentDefinition(body.definitionPath) : validateDefinitionObject(body.definition);
-      // Seal literal secrets before they touch the DB; hash reflects the sealed form.
+      // Seal literal secrets before they touch the DB. The persisted hash is the canonical
+      // content hash of the UNSEALED definition (same value CLI validate reports) — hashing
+      // the sealed form made it nondeterministic (AES-GCM random IV => new hash per registration).
       const sealed = sealDefinitionSecrets(load.definition);
-      const sealedHash = createHash('sha256').update(JSON.stringify(sealed)).digest('hex').slice(0, 16);
+      const sealedHash = load.definitionHash;
       const id = db.saveAgent(sealed.metadata.name, sealed.metadata.version, JSON.stringify(sealed), sealedHash);
       return { id, hash: sealedHash, warnings: load.warnings, definition: redactedForLog(sealed) };
     } catch (e) {
@@ -126,7 +128,8 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
     const sealed = sealDefinitionSecrets(body.definition) as { metadata?: { name?: string; version?: string } };
     const name = sealed.metadata?.name?.trim() || 'untitled-draft';
     const version = sealed.metadata?.version?.trim() || '0.1.0-draft';
-    const hash = createHash('sha256').update(JSON.stringify(sealed)).digest('hex').slice(0, 16);
+    // Deterministic content hash of the unsealed definition (sealed form has a random-IV ciphertext).
+    const hash = createHash('sha256').update(JSON.stringify(body.definition)).digest('hex').slice(0, 16);
     const id = db.saveAgent(name, version, JSON.stringify(sealed), hash, 'draft');
     return { id, name, version, hash, status: 'draft' };
   });
@@ -409,7 +412,8 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
     try {
       const load = validateDefinitionObject(body.definition);
       const sealed = sealDefinitionSecrets(load.definition);
-      const sealedHash = createHash('sha256').update(JSON.stringify(sealed)).digest('hex').slice(0, 16);
+      // Canonical unsealed content hash — identical to CLI validate / POST /api/agents for the same content.
+      const sealedHash = load.definitionHash;
       // Id is fixed to the stored name@version so runs stay linked.
       db.updateAgentDefinition(id, JSON.stringify(sealed), sealedHash);
       return { id, hash: sealedHash, status: existing.status ?? 'published', warnings: load.warnings };
@@ -543,7 +547,8 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
         : (() => { const p = parseAgentMarkdown(body.markdown ?? ''); return { definition: mdProfileToDefinition(p), profile: p }; })();
       const validated = validateDefinitionObject(definition);
       const defJson = JSON.stringify(sealDefinitionSecrets(validated.definition));
-      const hash = createHash('sha256').update(defJson).digest('hex').slice(0, 16);
+      // Canonical unsealed content hash (matches the CLI import-md command for the same profile).
+      const hash = validated.definitionHash;
       let id: string | null = null;
       if (body.register !== false) {
         id = db.saveAgent(validated.definition.metadata.name, validated.definition.metadata.version, defJson, hash);

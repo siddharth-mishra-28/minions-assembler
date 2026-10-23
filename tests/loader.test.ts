@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { validateDefinitionObject } from '../src/agents/loader.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadAgentDefinition, validateDefinitionObject } from '../src/agents/loader.js';
 import type { AgentDefinition } from '../src/core/types.js';
 
 const minimal: AgentDefinition = {
@@ -48,5 +51,25 @@ describe('loader validation (persona + builtins)', () => {
   });
   it('rejects invalid builtins decision values', () => {
     expect(() => validateDefinitionObject({ ...minimal, tools: { builtins: { default: 'maybe' } } })).toThrow(/Schema validation failed/);
+  });
+});
+
+describe('loadAgentDefinition file parsing', () => {
+  it('tolerates a UTF-8 BOM and hashes identically to the BOM-less file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mn-loader-'));
+    try {
+      const body = JSON.stringify(minimal);
+      const plain = join(dir, 'plain.json');
+      const bom = join(dir, 'bom.json');
+      writeFileSync(plain, body, 'utf8');
+      // PowerShell and many Windows editors write a UTF-8 BOM.
+      writeFileSync(bom, '\uFEFF' + body, 'utf8');
+      const a = loadAgentDefinition(plain);
+      const b = loadAgentDefinition(bom);
+      expect(b.definitionHash).toBe(a.definitionHash);
+      expect(a.definitionHash).toMatch(/^[0-9a-f]{16}$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

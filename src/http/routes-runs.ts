@@ -70,7 +70,11 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     try {
       const { registry, tools } = mcpRegistryFromDb();
       // Serialize: chain each run onto the previous one so concurrent POSTs queue cleanly.
-      const queued = runQueue.run(() => executeRun({ definition, agentId: id, definitionHash: 'serve', db, taskOverride, auditLevel, turnTimeoutMs, approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
+      // Record the agent's registered content hash (integrity), not a source marker.
+      const definitionHash = typeof agent.definition_hash === 'string' && agent.definition_hash.trim()
+        ? agent.definition_hash
+        : validateDefinitionObject(definition).definitionHash;
+      const queued = runQueue.run(() => executeRun({ definition, agentId: id, definitionHash, db, taskOverride, auditLevel, turnTimeoutMs, approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
       return await queued;
     } catch (e) {
       return reply.code(500).send({ error: (e as Error).message });

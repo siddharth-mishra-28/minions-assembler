@@ -7,7 +7,10 @@ import type { McpServerConfig } from '../mcp/mcp.js';
 import { compilePermissionHandlers } from '../agents/permissions.js';
 import { AuditLog, newTraceId } from '../core/audit.js';
 import { redactedForLog } from '../agents/loader.js';
+import { resolveProviderRef } from '../agents/default-agent.js';
 import { resolveWorkspace } from '../core/workspace.js';
+import { PlatformStore } from '../store/platform.js';
+import type { SqliteAdapter } from '../store/sqlite.js';
 import { mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { buildHarnessTools, autoMkdirPreTool, resolveTurnTimeoutMs, harnessEnabled, DEFAULT_TURN_TIMEOUT_MS } from '../agents/harness-tools.js';
@@ -84,7 +87,13 @@ export async function abortRun(runId: string): Promise<boolean> {
 }
 
 export async function executeRun(opts: RunOptions): Promise<{ runId: string; sessionId: string; traceId: string; text: string }> {
-  const { definition: def } = opts;
+  // Definitions that reference a Settings provider (`provider.providerRef`) store only the
+  // `providerApiKey: 'provider-ref'` placeholder. Resolve the ref against the provider store
+  // (and seal the vault key) BEFORE any credential work — the same resolution chat performs —
+  // or the literal placeholder reaches the SDK and the run dies with an auth 401.
+  const def = opts.definition.provider?.providerRef
+    ? resolveProviderRef(opts.definition, new PlatformStore(opts.db as SqliteAdapter))
+    : opts.definition;
   const apiKey = resolveApiKey(def);
   const traceId = newTraceId();
   const workspace = resolveWorkspace(def.knowledge?.workingDirectory);
@@ -101,7 +110,11 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
   const runRoot = opts.runDir ?? joinRunRoot(workspace.root, runId);
   mkdirSync(runRoot, { recursive: true });
 
-  const audit = new AuditLog(`${runRoot}/.audit`);
+  const auditDir = join(runRoot, '.audit');
+  const audit = new AuditLog(auditDir);
+  // Surface the audit trail on the run row (same as chat runs) so GET /api/runs and the UI
+  // can link to it; the chain is otherwise invisible for source='run' rows.
+  try { opts.db.setRunAuditPath(runId, auditDir); } catch { /* best-effort */ }
   /**
    * Persist an audit event if its minimum verbosity rank fits the configured level.
    * Levels: minimal(0) — lifecycle only; default(1) — + tool calls/results + permission decisions + usage; full(2) — + reasoning, partial results, progress, raw deltas.

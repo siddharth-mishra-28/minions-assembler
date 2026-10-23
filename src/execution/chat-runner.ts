@@ -11,6 +11,9 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildHarnessTools, autoMkdirPreTool, harnessEnabled, resolveTurnTimeoutMs } from '../agents/harness-tools.js';
 import { joinRunRoot } from './runner.js';
+import { resolveProviderRef } from '../agents/default-agent.js';
+import { PlatformStore } from '../store/platform.js';
+import type { SqliteAdapter } from '../store/sqlite.js';
 import { createUsageProxy, type UsageProxy } from './usage-proxy.js';
 import type { AgentDefinition } from '../core/types.js';
 import type { DbAdapter } from '../store/adapter.js';
@@ -73,7 +76,16 @@ export class TurnAborted extends Error {
  * to the caller while the model replies. Re-permissions through the definition policy.
  */
 export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnResult> {
-  const { definition: def } = opts;
+  // Definitions that reference a Settings provider (`provider.providerRef`) carry only the
+  // `providerApiKey: 'provider-ref'` placeholder. Resolve the ref against the provider store
+  // (sealed vault key) BEFORE any credential work — the same resolution `executeRun` performs —
+  // or the literal placeholder reaches the SDK and the turn dies with an auth 401 (CLI chat
+  // path calls executeChatTurn directly, bypassing chat-engine's resolution). Re-resolution of
+  // an already-resolved definition is idempotent.
+  const { definition } = opts;
+  const def = definition.provider?.providerRef
+    ? resolveProviderRef(definition, new PlatformStore(opts.db as SqliteAdapter))
+    : definition;
   const apiKey = resolveApiKey(def);
   const traceId = newTraceId();
   const sessionId = opts.sessionId ?? `${opts.sessionIdPrefix ?? 'chat'}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -83,7 +95,12 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
   // thread always operates in its project folder instead.
   const workspaceRoot = opts.projectBound ? resolve(opts.workingDirectory) : resolveChatWorkspace(def, opts.workingDirectory);
   mkdirSync(workspaceRoot, { recursive: true });
-  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.content, 'chat', { source: 'chat', threadId: opts.threadId, projectId: opts.projectId });
+  // Run rows record the registered agent's canonical definition hash (same value as
+  // headless runs); synthesized default/project agents keep the 'chat' placeholder.
+  // Never hash `def` here: it contains the resolved (sealed, random-IV) provider key.
+  let definitionHash = 'chat';
+  try { definitionHash = opts.db.getAgent(opts.agentId)?.definition_hash ?? 'chat'; } catch { /* synthesized agent */ }
+  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.content, definitionHash, { source: 'chat', threadId: opts.threadId, projectId: opts.projectId });
   // Audit lives outside project folders when an auditDir is supplied; legacy threads keep `<ws>/run_<id>/.audit`.
   const auditDir = opts.auditRoot ? resolve(opts.auditRoot, runId) : `${joinRunRoot(workspaceRoot, runId)}/.audit`;
   mkdirSync(auditDir, { recursive: true });

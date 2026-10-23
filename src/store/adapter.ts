@@ -2,7 +2,7 @@ import type { RunStatus } from '../core/types.js';
 
 export interface DbAdapter {
   saveAgent(name: string, version: string, definitionJson: string, hash: string, status?: string): string;
-  getAgent(id: string): { id: string; name: string; version: string; definition_json: string; status?: string } | undefined;
+  getAgent(id: string): { id: string; name: string; version: string; definition_json: string; definition_hash?: string; status?: string } | undefined;
   listAgents(status?: string): { id: string; name: string; version: string; created_at: string; status?: string }[];
   /** Replace an agent's definition in place (id stays `name@version`). Returns false if unknown. */
   updateAgentDefinition(id: string, definitionJson: string, hash: string): boolean;

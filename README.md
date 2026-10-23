@@ -8,9 +8,61 @@ One JSON definition drives three surfaces:
 |---|---|---|
 | **CLI (autonomous / CI)** | `minions-assembler run --agentDefinition ./my-agent.json` | Headless one-shot runs with exit codes for pipelines |
 | **Serve (API + Swagger)** | `minions-assembler serve --port 3100` | REST API, `/docs` Swagger UI, OpenAPI JSON |
-| **Serve (UI)** | browser at `http://127.0.0.1:3100` | **Minions Cockpit** — Dashboard · Agents (Define wizard + quick-create) · Chat · Runs · MCP Registry · API Docs |
+| **Serve (UI)** | browser at `http://127.0.0.1:3100` | **Minions Cockpit** — Chat (with agent picker) · Agents · Runs · New run · Dashboard · Audit & logs · MCP Registry · Settings · API Docs |
 
-Everything persists to SQLite (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`) for reusability, auditing, and traceability — plus structured JSONL audit logs and per-run event files on disk. Built on [`@github/copilot-sdk`](https://docs.github.com/en/copilot/how-tos/copilot-sdk) (TypeScript / Node.js 18+).
+Everything persists to SQLite (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`, `providers`, `projects`, `settings`, `approvals`, `metrics_daily`) for reusability, auditing, and traceability — plus structured JSONL audit logs and per-run event files on disk. Built on [`@github/copilot-sdk`](https://docs.github.com/en/copilot/how-tos/copilot-sdk) (TypeScript / Node.js 18+).
+
+## What you get
+
+- **Chat-first agent platform** — pick a project folder, pick an agent (built-in **GitHub Copilot default** or any custom agent), and chat. Streaming markdown responses, per-turn reasoning/tool streams, approval prompts, cancel mid-turn, transcript export.
+- **Custom agents as versioned JSON** — one `AgentDefinition v1.0` file (identity, model/provider, instructions, tools & permissions, MCP, knowledge/workspace, runtime) drives all three surfaces. Advanced users edit JSON directly; everyone else uses the Agents wizard (drafts, AI-aided **Elaborate**, template upload, `.agent.md` import).
+- **BYOK providers** — OpenAI, Anthropic, Azure, OpenRouter, Ollama or any OpenAI-compatible endpoint. Keys are sealed AES-256-GCM (`enc:v1:`) in the SQLite vault and never returned by the API; definitions reference keys by `provider-ref`, `${ENV_VAR}` or sealed token.
+- **Headless runs for CI** — `run` command and `POST /api/agents/:id/runs` / `POST /api/agent-definitions/runs` execute the same runner as chat turns: queued, stoppable, timed out, exit-coded.
+- **Full auditability** — every run (headless **or** chat turn) is a numbered `run_<id>` with `sessionId`/`traceId`/`definition_hash`, a complete ordered event chain (prompt → deltas → tool calls → permission decisions → usage), dual-written to SQLite and per-run `events.jsonl`.
+- **Retention you control** — chat/run history is kept **7 days by default**, configurable 0–3650 days (`Settings → Data & retention` or `PATCH /api/settings`), with pinned-item protection and daily metrics that survive purges.
+- **MCP registry** — register local/remote MCP servers once (`mcp.use` them from any definition), probe tools, allow/deny scoping, OAuth (PKCE) for remote servers.
+- **Operations surface** — Dashboard metrics, structured server logs (`GET /api/logs`), audit filters/export, Swagger (`/docs`), SQLite schema documented below.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Surfaces
+    CLI["CLI<br/>minions-assembler"]
+    SPA["Minions Cockpit<br/>React SPA"]
+    API["REST API<br/>Fastify + /docs"]
+  end
+  subgraph Core["src/ (TypeScript)"]
+    HTTP["http/ routes"]
+    RUN["execution/<br/>runner · chat-runner · RunQueue · retention"]
+    AG["agents/<br/>loader · sealing · defaults"]
+    MC["mcp/ registry"]
+    ST["store/ SQLite adapter"]
+  end
+  SDK["@github/copilot-sdk"]
+  DB[("SQLite<br/>data/minion.db")]
+  WS[("run_<id>/ workspaces<br/>+ .audit/events.jsonl")]
+  CLI --> RUN
+  SPA --> API --> HTTP --> RUN
+  HTTP --> AG --> ST
+  RUN --> SDK
+  RUN --> ST --> DB
+  RUN --> WS
+  MC --> RUN
+```
+
+| Module | Responsibility |
+|---|---|
+| `src/core/` | Shared types (`AgentDefinition` v1.0), definition hash (SHA-256 of the canonical **unsealed** definition, first 16 hex chars) |
+| `src/agents/` | Definition loader/validation (BOM-tolerant), provider-key sealing + `provider-ref` resolution, default-agent wiring |
+| `src/execution/` | `executeRun` (headless) · `executeChatTurn` (chat) · `RunQueue` serialization · run stop/cancel · retention sweep |
+| `src/mcp/` | MCP server registry, probe, tool scoping, OAuth |
+| `src/http/` | Fastify routes: agents, runs, chat, platform (settings/providers/projects/retention/audit), mcp, system; SPA static serving |
+| `src/store/` | SQLite adapter (better-sqlite3) + Postgres-conformant stub |
+| `web/` | React + Vite SPA (Minions Cockpit): Chat, Agents, Runs, Audit, Settings, Dashboard |
+| `dist/` | Compiled output (`tsc -p tsconfig.build.json`); `dist/cli.js` is the npm `bin` |
+
+One runner, three doors: a CLI `run`, an API run, and a chat turn all persist the same `runs`/`events` rows with the same `definition_hash`, so the audit trail is uniform no matter how the agent was invoked.
 
 ---
 
@@ -373,7 +425,7 @@ Chat turns are ordinary runs: each creates a `run_<id>` row (visible in **Runs**
 | `GET/POST /api/credentials`, `DELETE /api/credentials/:name` | Named credentials vault — values are sealed AES-256-GCM (`enc:v1:`) at rest; responses never return plaintext. |
 | `GET /api/providers/models` · `POST /api/providers/test` | Known provider presets · connectivity-test a provider + key before saving. |
 | `GET /api/persona/default-system-prompt` | The SDK-managed default Copilot system prompt (what `persona.useCopilotDefaultPrompt: true` rides on). |
-| `POST /api/agent-definitions/runs` | Run a pasted definition without registering it — `{ definition, taskOverride?, auditLevel? }` → same run shape as `POST /api/agents/:id/runs`. |
+| `POST /api/agent-definitions/runs` | Run a pasted definition without registering it — `{ definition, taskOverride?, auditLevel?, approvalMode? }` → same run shape as `POST /api/agents/:id/runs`. |
 | `GET /api/agents/drafts` · `POST /api/agents/draft` | Wizard draft storage (save/resume in-progress definitions). |
 | `POST /api/agents/elaborate` | AI-aided persona/task elaboration (§7 Elaborate). |
 | `POST /api/agents/import` · `POST /api/agents/validate` | Import a `.agent.md` markdown profile (frontmatter + prompt body) · dry-run validation. |
@@ -507,6 +559,8 @@ minions-assembler chat list   [--db <path>]
 minions-assembler chat send   --thread <id> --message <text> [--timeout-ms <n>] [--db <path>]
 minions-assembler chat read   --thread <id> [--db <path>]
 ```
+
+> `chat create --agent <id>` requires a **registered** agent id (a row in the `agents` table — e.g. `my-agent@1.0.0`, find ids with `list`). The built-in GitHub Copilot default agent is synthesized by the server and only available through the web UI's agent picker.
 
 `run` exit codes: `0` done · `2` validation · `3` runtime/auth · `4` permission (`approve-all-ci-only` without `--yes`). `import-md` exits `2` on an invalid profile. `chat send` exits `2` for an unknown thread/agent, `3` when the turn fails.
 
@@ -656,8 +710,9 @@ The request runs with `AbortSignal.timeout(…)`, **3 attempts** with 800 ms × 
 
 ## 8. Audit, traceability, and secrets
 
-- `runId ↔ sessionId ↔ traceId ↔ definition_hash` join across all tables.
+- `runId ↔ sessionId ↔ traceId ↔ definition_hash` join across all tables. The `definition_hash` is SHA-256 over the canonical **unsealed** definition (first 16 hex chars) — the same value in the UI, API and CLI for the same definition content, so drift or tampering is visible.
 - Dual-write: human JSONL at `<workspace>/runs/<runId>/events.jsonl` **and** the SQLite `events` table, scrubbed of secret-looking values at write time.
+- **Retention (default 7 days, configurable)**: `GET /api/retention` reports the last-run cutoff; `PATCH /api/settings` → `retention: { days: 0–3650, scope: "everything"|"unpinned", keepPinned }` (UI: **Settings → Data & retention**). A sweep runs at startup and on an interval, purging expired runs/chat history; `POST /api/retention/purge` runs it on demand and `metrics_daily` rollups survive purges.
 - Structured **server audit log** at `<workspace>/.minion/server.log.jsonl` (per-HTTP-request in/out + status + ms, lifecycle events) — browse via `GET /api/logs` or the Dashboard log viewer.
 - **Agent workspace** configurable: definition `knowledge.workingDirectory` > `MINION_WORKSPACE` env > cwd (§4.2); resolved root is reported in `GET /api/status` and recorded in each run's `run.start` event.
 - Usage (tokens in/out, credits, duration, endpoint) from `assistant.usage`; transcripts hashed (SHA-256).
@@ -668,6 +723,18 @@ The request runs with `AbortSignal.timeout(…)`, **3 attempts** with 800 ms × 
 ## 9. Tests
 
 Live-verified this build: typecheck clean · unit tests (`tests/`, via `vitest.config.ts`) · all UI screens `200` (`/` dashboard, `/ui`, `/ui/agents(/:id)`, `/ui/runs(/:id)`, `/ui/sessions(/:sid)`, `/ui/mcp(/:name)`, `/docs`, 404 pages) · validate endpoint `200/400` both proven · register by path `200` · unknown agent/run/server `404` messages · MCP register/probe/list/delete live-verified with the echo server · agent `mcp.use` run returned `MCP-USE-OK` with `mcp.expand` in the audit chain · dashboard metrics + workspace resolution live-verified · **coding harness verified live**: nested `create` of `app/` `components/` `lib/` trees, `bash` running `node`/`npm`/tests (exit codes surfaced), `mkdir -p`, path-escape rejection, `toolSearch` deferral disabled so the model actually sees the tools · **Elaborate verified live** (short + long generation, 3-attempt retry, clear 401/404/429/empty-content errors; Fastify `connectionTimeout: 0` so slow generations are not socket-yanked) · **UI Developer / FE Engineer examples verified live** (453-line dashboard in 72 s; 890-line landing page) · **Chat E2E verified live**: wizard quick-create → publish → 1:1 chat turn built a Spring Boot + Next.js CRUD app in the agent's declared workspace (backend `mvn test` 5/5 green, frontend built) with zero path-escape denials and the live reasoning/tool stream rendered in the Chat UI.
+
+### 9.0 Three-mode end-to-end verification (UI · CLI · API)
+
+A **Full Stack Developer** agent (Spring Boot 3 + Next.js Employee CRUD task) was executed through all three surfaces and each generated app was independently verified:
+
+| Mode | Invocation | Result |
+|---|---|---|
+| **UI** | Cockpit → **New run** → full-stack-developer@1.0.0 | ✅ done · full event chain + output + verification table rendered in the run detail page |
+| **CLI** | `minions-assembler run --agentDefinition full-stack-developer.json --output-format json --no-stream` | ✅ done · JSON result with `runId`/`sessionId`/`traceId`, same `definition_hash` as the UI run |
+| **API** | `POST /api/agent-definitions/runs` (inline definition) | ✅ done · identical run shape, `runId` queryable via `GET /api/runs/:id` |
+
+Per generated app (independently of the agent's own claims): `mvn package` exit 0 (18–25 tests green) · `npm run build` exit 0 · live CRUD smoke against the running jar — list 200, create 201, read 200, missing 404, update 200, delete 204, delete-again 404, invalid input 400 with per-field errors · CORS preflight 200 with correct `Access-Control-Allow-*` · Next.js production serve 200. All checks passed on all three runs; no platform defects found in the generated output.
 
 ### 9.1 Production hardening
 

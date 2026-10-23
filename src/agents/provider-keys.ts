@@ -5,10 +5,10 @@ import { encryptToToken, resolveProviderApiKeyValue } from '../core/crypto.js';
  * BYOK provider key (agent registration, elaborate, provider test/models routes).
  */
 
-/** Seal a literal providerApiKey value into an enc:v1 token; pass through tokens and ${ENV} refs. */
+/** Seal a literal providerApiKey value into an enc:v1 token; pass through tokens, ${ENV} refs, and the `provider-ref` sentinel. */
 export const sealProviderApiKey = (value: string): string => {
   const v = value.trim();
-  if (!v || v.startsWith('enc:v1:') || /^\$\{[A-Z0-9_]+\}$/.test(v)) return v;
+  if (!v || v === 'provider-ref' || v.startsWith('enc:v1:') || /^\$\{[A-Z0-9_]+\}$/.test(v)) return v;
   return encryptToToken(v);
 };
 

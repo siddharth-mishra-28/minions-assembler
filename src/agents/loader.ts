@@ -110,7 +110,8 @@ export function validateDefinitionObject(json: unknown): LoadResult {
 }
 
 export function loadAgentDefinition(path: string): LoadResult {
-  const raw = readFileSync(path, 'utf8');
+  // Tolerate UTF-8 BOMs (Windows editors/PowerShell writes): JSON.parse rejects them.
+  const raw = readFileSync(path, 'utf8').replace(/^\uFEFF/, '');
   let json: unknown;
   try {
     json = JSON.parse(raw);
