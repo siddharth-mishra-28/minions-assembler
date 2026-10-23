@@ -10,7 +10,8 @@ export interface DbAdapter {
   deleteAgent(id: string): boolean;
   /** Counts used by delete-safety checks. */
   agentActivity(agentId: string): { activeRuns: number; activeSessions: number; totalRuns: number; totalSessions: number };
-  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string): string;
+  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string }): string;
+  setRunAuditPath(runId: string, path: string): void;
   appendEvent(runId: string, seq: number, type: string, payloadJson: string, persisted: boolean): void;
   finishRun(runId: string, status: RunStatus, error?: string): void;
   recordUsage(runId: string, usage: { tokensIn?: number; tokensOut?: number; credits?: number; durationMs?: number; endpoint?: string; requestId?: string }): void;
@@ -41,12 +42,11 @@ export interface DbAdapter {
   listCredentials(): { name: string; created_at: string; updated_at: string }[];
   deleteCredential(name: string): boolean;
   // Chat (persistent multi-turn agent conversations)
-  createChatThread(input: { title: string; agentId: string | null; sessionId: string | null }): string;
+  createChatThread(input: { title: string; agentId: string | null; sessionId: string | null; projectId?: string | null; modelOverride?: string | null }): string;
   getChatThread(id: string): Record<string, unknown> | undefined;
-  listChatThreads(filter?: { agentId?: string }): Record<string, unknown>[];
-  updateChatThread(id: string, fields: { title?: string; sessionId?: string | null; updated_at?: string }): boolean;
+  listChatThreads(filter?: { agentId?: string; projectId?: string; includeArchived?: boolean; q?: string }): Record<string, unknown>[];
+  updateChatThread(id: string, fields: { title?: string; sessionId?: string | null; updated_at?: string; agentId?: string | null; projectId?: string | null; pinned?: boolean; archived?: boolean; modelOverride?: string | null; approvalMode?: string | null }): boolean;
   deleteChatThread(id: string): boolean;
-  addChatMessage(threadId: string, m: { role: string; author: string; content: string; runId?: string | null }): number;
-  getChatMessages(threadId: string): Record<string, unknown>[];
-  close(): void;
+  addChatMessage(threadId: string, m: { role: string; author: string; content: string; runId?: string | null; meta?: Record<string, unknown> | null }): number;
+  getChatMessages(threadId: string): Record<string, unknown>[];  close(): void;
 }

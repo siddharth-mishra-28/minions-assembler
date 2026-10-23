@@ -11,6 +11,7 @@ export class PostgresAdapter implements DbAdapter {
   updateAgentDefinition(): boolean { throw new Error('Not implemented'); }
   deleteAgent(): boolean { throw new Error('Not implemented'); }
   agentActivity(): { activeRuns: number; activeSessions: number; totalRuns: number; totalSessions: number } { throw new Error('Not implemented'); }
+  setRunAuditPath(): void { throw new Error('Not implemented'); }
   createRun(): string { throw new Error('Not implemented'); }
   appendEvent(): void { throw new Error('Not implemented'); }
   finishRun(): void { throw new Error('Not implemented'); }

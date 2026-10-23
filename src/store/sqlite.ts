@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import type { DbAdapter } from './adapter.js';
 import type { RunStatus } from '../core/types.js';
 import { encryptSecret, decryptSecret } from '../core/crypto.js';
+import { runMigrations } from './migrations.js';
 
 export class SqliteAdapter implements DbAdapter {
   private db: Database.Database;
@@ -41,7 +42,10 @@ export class SqliteAdapter implements DbAdapter {
     try {
       this.db.exec("ALTER TABLE agents ADD COLUMN status TEXT DEFAULT 'published'");
     } catch { /* column already exists */ }
+    runMigrations(this.db);
   }
+  /** Raw handle for sibling stores (PlatformStore) that share this connection. */
+  get raw(): Database.Database { return this.db; }
   saveAgent(name: string, version: string, definitionJson: string, hash: string, status = 'published'): string {
     const id = `${name}@${version}`;
     this.db.prepare(`INSERT INTO agents(id,name,version,definition_json,definition_hash,created_at,status) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json, definition_hash=excluded.definition_hash, status=excluded.status`).run(id, name, version, definitionJson, hash, new Date().toISOString(), status);
@@ -74,9 +78,9 @@ export class SqliteAdapter implements DbAdapter {
       totalSessions: sessions.total ?? 0,
     };
   }
-  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string): string {
+  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string }): string {
     const id = `run_${randomUUID().slice(0, 8)}`;
-    this.db.prepare(`INSERT INTO runs(id,agent_id,session_id,trace_id,status,model,provider_type,task_prompt,definition_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, agentId, sessionId, traceId, 'running', model, providerType, taskPrompt.slice(0, 4000), definitionHash, new Date().toISOString());
+    this.db.prepare(`INSERT INTO runs(id,agent_id,session_id,trace_id,status,model,provider_type,task_prompt,definition_hash,created_at,source,thread_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, agentId, sessionId, traceId, 'running', model, providerType, taskPrompt.slice(0, 4000), definitionHash, new Date().toISOString(), extra?.source ?? 'run', extra?.threadId ?? null, extra?.projectId ?? null);
     return id;
   }
   appendEvent(runId: string, seq: number, type: string, payloadJson: string, persisted: boolean) {
@@ -200,40 +204,60 @@ export class SqliteAdapter implements DbAdapter {
     return r.changes > 0;
   }
   // ---------- chat ----------
-  createChatThread(input: { title: string; agentId: string | null; sessionId: string | null }): string {
+  createChatThread(input: { title: string; agentId: string | null; sessionId: string | null; projectId?: string | null; modelOverride?: string | null }): string {
     const id = `chat_${randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
-    this.db.prepare(`INSERT INTO chat_threads(id,title,agent_id,session_id,created_at,updated_at) VALUES(?,?,?,?,?,?)`).run(id, input.title.slice(0, 200), input.agentId, input.sessionId, now, now);
+    this.db.prepare(`INSERT INTO chat_threads(id,title,agent_id,session_id,created_at,updated_at,project_id,model_override) VALUES(?,?,?,?,?,?,?,?)`).run(id, input.title.slice(0, 200), input.agentId, input.sessionId, now, now, input.projectId ?? null, input.modelOverride ?? null);
     return id;
   }
   getChatThread(id: string): Record<string, unknown> | undefined {
     return this.db.prepare(`SELECT * FROM chat_threads WHERE id=?`).get(id) as Record<string, unknown> | undefined;
   }
-  listChatThreads(filter?: { agentId?: string }): Record<string, unknown>[] {
-    if (filter?.agentId) return this.db.prepare(`SELECT * FROM chat_threads WHERE agent_id=? ORDER BY updated_at DESC`).all(filter.agentId) as Record<string, unknown>[];
-    return this.db.prepare(`SELECT * FROM chat_threads ORDER BY updated_at DESC LIMIT 200`).all() as Record<string, unknown>[];
+  listChatThreads(filter?: { agentId?: string; projectId?: string; includeArchived?: boolean; q?: string }): Record<string, unknown>[] {
+    const where: string[] = [];
+    const vals: unknown[] = [];
+    if (filter?.agentId) { where.push('t.agent_id=?'); vals.push(filter.agentId); }
+    if (filter?.projectId) { where.push('t.project_id=?'); vals.push(filter.projectId); }
+    if (!filter?.includeArchived) where.push('t.archived=0');
+    if (filter?.q) {
+      where.push('(t.title LIKE ? OR EXISTS (SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.content LIKE ?))');
+      const like = `%${filter.q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+      vals.push(like, like);
+    }
+    const sql = `SELECT t.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id=t.id) AS message_count FROM chat_threads t ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY t.pinned DESC, t.updated_at DESC LIMIT 500`;
+    return this.db.prepare(sql.replace(/LIKE \?/g, "LIKE ? ESCAPE '\\'")).all(...vals) as Record<string, unknown>[];
   }
-  updateChatThread(id: string, fields: { title?: string; sessionId?: string | null; updated_at?: string }): boolean {
+  updateChatThread(id: string, fields: { title?: string; sessionId?: string | null; updated_at?: string; agentId?: string | null; projectId?: string | null; pinned?: boolean; archived?: boolean; modelOverride?: string | null; approvalMode?: string | null }): boolean {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (fields.title !== undefined) { sets.push('title=?'); vals.push(fields.title.slice(0, 200)); }
     if (fields.sessionId !== undefined) { sets.push('session_id=?'); vals.push(fields.sessionId); }
     if (fields.updated_at !== undefined) { sets.push('updated_at=?'); vals.push(fields.updated_at); }
+    if (fields.agentId !== undefined) { sets.push('agent_id=?'); vals.push(fields.agentId); }
+    if (fields.projectId !== undefined) { sets.push('project_id=?'); vals.push(fields.projectId); }
+    if (fields.pinned !== undefined) { sets.push('pinned=?'); vals.push(fields.pinned ? 1 : 0); }
+    if (fields.archived !== undefined) { sets.push('archived=?'); vals.push(fields.archived ? 1 : 0); }
+    if (fields.modelOverride !== undefined) { sets.push('model_override=?'); vals.push(fields.modelOverride); }
+    if (fields.approvalMode !== undefined) { sets.push('approval_mode=?'); vals.push(fields.approvalMode); }
     if (!sets.length) return false;
     vals.push(id);
     return this.db.prepare(`UPDATE chat_threads SET ${sets.join(', ')} WHERE id=?`).run(...vals as unknown[]).changes > 0;
   }
   deleteChatThread(id: string): boolean {
     this.db.prepare(`DELETE FROM chat_messages WHERE thread_id=?`).run(id);
+    this.db.prepare(`DELETE FROM approvals WHERE thread_id=?`).run(id);
     return this.db.prepare(`DELETE FROM chat_threads WHERE id=?`).run(id).changes > 0;
   }
-  addChatMessage(threadId: string, m: { role: string; author: string; content: string; runId?: string | null }): number {
-    const r = this.db.prepare(`INSERT INTO chat_messages(thread_id,role,author,content,run_id,created_at) VALUES(?,?,?,?,?,?)`).run(threadId, m.role, m.author, m.content.slice(0, 100000), m.runId ?? null, new Date().toISOString());
-    this.db.prepare(`UPDATE chat_threads SET updated_at=? WHERE id=?`).run(new Date().toISOString(), threadId);
+  addChatMessage(threadId: string, m: { role: string; author: string; content: string; runId?: string | null; meta?: Record<string, unknown> | null }): number {
+    const now = new Date().toISOString();
+    const r = this.db.prepare(`INSERT INTO chat_messages(thread_id,role,author,content,run_id,created_at,meta_json) VALUES(?,?,?,?,?,?,?)`).run(threadId, m.role, m.author, m.content.slice(0, 100000), m.runId ?? null, now, m.meta ? JSON.stringify(m.meta) : null);
+    this.db.prepare(`UPDATE chat_threads SET updated_at=? WHERE id=?`).run(now, threadId);
     return Number(r.lastInsertRowid);
   }
   getChatMessages(threadId: string): Record<string, unknown>[] {
-    return this.db.prepare(`SELECT mtid,role,author,content,run_id,created_at FROM chat_messages WHERE thread_id=? ORDER BY mtid`).all(threadId) as Record<string, unknown>[];
+    return this.db.prepare(`SELECT mtid,role,author,content,run_id,created_at,meta_json FROM chat_messages WHERE thread_id=? ORDER BY mtid`).all(threadId) as Record<string, unknown>[];
   }
-  close() { this.db.close(); }
+  setRunAuditPath(runId: string, path: string): void {
+    this.db.prepare(`UPDATE runs SET audit_path=? WHERE id=?`).run(path, runId);
+  }  close() { this.db.close(); }
 }
