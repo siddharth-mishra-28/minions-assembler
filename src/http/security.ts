@@ -59,7 +59,7 @@ export function registerSecurity(app: FastifyInstance, opts: SecurityOptions = {
 
   app.addHook('onSend', async (_req, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('X-Frame-Options', 'DENY');
+    reply.header('X-Frame-Options', 'SAMEORIGIN');
     reply.header('Referrer-Policy', 'no-referrer');
     return payload;
   });

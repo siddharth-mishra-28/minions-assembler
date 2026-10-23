@@ -11,6 +11,7 @@ import { registerRunRoutes } from './http/routes-runs.js';
 import { registerMcpRoutes } from './http/routes-mcp.js';
 import { registerChatRoutes } from './http/routes-chat.js';
 import { registerUiRoutes } from './http/routes-ui.js';
+import { registerWebApp } from './http/web-static.js';
 import { registerPlatformRoutes } from './http/routes-platform.js';
 import { registerSecurity } from './http/security.js';
 import { PlatformStore } from './store/platform.js';
@@ -125,6 +126,7 @@ export async function buildServer(dbPath = './data/minion.db') {
   await registerPlatformRoutes(app, { platform, broker, retention });
   await registerChatRoutes(app, { db, platform, engine, hub, broker });
   await registerUiRoutes(app, { db });
+  await registerWebApp(app);
 
   retention.start();
   app.addHook('onClose', async () => { retention.stop(); });

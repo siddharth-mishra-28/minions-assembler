@@ -29,7 +29,7 @@ export async function registerUiRoutes(app: FastifyInstance, ctx: { db: DbAdapte
     reply.type('text/html').send(chatPage(db, { threadId: id }));
   });
 
-  app.get('/', async (_req, reply) => reply.type('text/html').send(dashboardPage(db)));
+  app.get('/ui/dashboard', async (_req, reply) => reply.type('text/html').send(dashboardPage(db)));
   // Legacy /ui — the define flow now lives as a tab on the Agents screen.
   app.get('/ui', async (_req, reply) => reply.redirect('/ui/agents?tab=define'));
   app.get('/ui/agents', async (req, reply) => {

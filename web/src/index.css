@@ -1,0 +1,50 @@
+﻿@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-border: var(--c-border);
+  --color-fg: var(--c-fg);
+  --color-muted: var(--c-muted);
+  --color-accent: var(--c-accent);
+  --color-accent-fg: var(--c-accent-fg);
+  --color-ok: var(--c-ok);
+  --color-warn: var(--c-warn);
+  --color-danger: var(--c-danger);
+}
+
+:root {
+  --c-bg: #f7f7f9; --c-surface: #ffffff; --c-surface-2: #f0f1f4; --c-border: #e2e4ea;
+  --c-fg: #16181d; --c-muted: #6b7280; --c-accent: #5b5bd6; --c-accent-fg: #ffffff;
+  --c-ok: #16a34a; --c-warn: #d97706; --c-danger: #dc2626;
+}
+.dark {
+  --c-bg: #0d0f14; --c-surface: #14171e; --c-surface-2: #1b1f28; --c-border: #272c37;
+  --c-fg: #e6e8ee; --c-muted: #8a91a0; --c-accent: #7c7cf0; --c-accent-fg: #0d0f14;
+  --c-ok: #34d399; --c-warn: #fbbf24; --c-danger: #f87171;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--c-bg); color: var(--c-fg); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+* { scrollbar-width: thin; scrollbar-color: var(--c-border) transparent; }
+::selection { background: color-mix(in srgb, var(--c-accent) 35%, transparent); }
+
+.prose pre { background: var(--c-surface-2); border: 1px solid var(--c-border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.prose code { font-family: var(--font-mono); font-size: 0.85em; }
+.prose :not(pre) > code { background: var(--c-surface-2); padding: 1px 5px; border-radius: 4px; }
+.prose :not(pre) > code::before, .prose :not(pre) > code::after { content: none; }
+.prose { color: var(--c-fg); --tw-prose-body: var(--c-fg); --tw-prose-headings: var(--c-fg); --tw-prose-bold: var(--c-fg); --tw-prose-links: var(--c-accent); --tw-prose-th-borders: var(--c-border); --tw-prose-td-borders: var(--c-border); --tw-prose-quotes: var(--c-muted); --tw-prose-bullets: var(--c-muted); --tw-prose-counters: var(--c-muted); }
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: #c678dd; }
+.hljs-string, .hljs-attr { color: #98c379; }
+.hljs-comment { color: var(--c-muted); font-style: italic; }
+.hljs-number, .hljs-title, .hljs-function { color: #61afef; }
+
+@keyframes blink { 50% { opacity: 0 } }
+.caret::after { content: "▍"; animation: blink 1s steps(2) infinite; margin-left: 1px; color: var(--c-accent); }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+.fade-in { animation: fadein .15s ease-out; }

@@ -7,7 +7,9 @@
     "minions-assembler": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm run build:web",
+    "build:web": "npm --prefix web ci --no-audit --no-fund && npm --prefix web run build",
+    "dev:web": "npm --prefix web run dev",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "serve": "node dist/cli.js serve",
@@ -21,6 +23,7 @@
     "examples"
   ],
   "dependencies": {
+    "@fastify/static": "^10.1.7",
     "@fastify/swagger": "^9.4.2",
     "@fastify/swagger-ui": "^5.2.0",
     "@github/copilot-sdk": "^1.0.19",
