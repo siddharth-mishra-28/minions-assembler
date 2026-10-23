@@ -205,4 +205,21 @@ export async function registerPlatformRoutes(
     const q = req.query as { days?: number };
     return { days: platform.dailyMetrics(q.days ?? 30), purgedTotals: platform.rollupTotals() };
   });
+
+  // ---------- audit ----------
+  app.get('/api/audit/runs', {
+    schema: { tags: ['platform'], summary: 'Audit trail: every run (chat turns and headless) with filters', querystring: { type: 'object', properties: {
+      source: { type: 'string', enum: ['chat', 'run'] }, status: { type: 'string' }, agentId: { type: 'string' }, projectId: { type: 'string' }, threadId: { type: 'string' },
+      q: { type: 'string', maxLength: 200 }, limit: { type: 'integer', minimum: 1, maximum: 200 }, offset: { type: 'integer', minimum: 0 } } } },
+  }, async (req) => platform.listAuditRuns(req.query as Record<string, never>));
+
+  app.get('/api/audit/runs/:id/export', {
+    schema: { tags: ['platform'], summary: 'Download the full audit bundle (run, usage, events, approvals) as JSON', response: { 404: { type: 'object', properties: { error: { type: 'string' } } } } },
+  }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const b = platform.auditBundle(id);
+    if (!b) return reply.code(404).send({ error: `run not found: ${id}` });
+    reply.header('content-disposition', `attachment; filename="audit-${id}.json"`);
+    return b;
+  });
 }

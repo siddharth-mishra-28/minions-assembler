@@ -217,6 +217,21 @@ describe('chat engine (scripted turns)', () => {
   });
 });
 
+describe('audit', () => {
+  it('lists runs with filters and exports a bundle', async () => {
+    const list = await json('GET', '/api/audit/runs?source=chat&limit=5');
+    expect(list.status).toBe(200);
+    expect(list.body.total).toBeGreaterThan(0);
+    const id = list.body.runs[0].id;
+    const b = await json('GET', `/api/audit/runs/${id}/export`);
+    expect(b.status).toBe(200);
+    expect(b.body.run.id).toBe(id);
+    expect(Array.isArray(b.body.events)).toBe(true);
+    expect((await json('GET', '/api/audit/runs/nope/export')).status).toBe(404);
+    expect((await json('GET', '/api/audit/runs?q=%25%27')).status).toBe(200);
+  });
+});
+
 describe('chat without a usable provider', () => {
   it('returns 412 with an actionable message', async () => {
     const list = (await json('GET', '/api/providers')).body.providers as { id: string }[];

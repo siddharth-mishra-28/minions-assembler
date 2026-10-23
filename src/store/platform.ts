@@ -303,6 +303,36 @@ export class PlatformStore {
    * Delete data older than `days` (0 = keep forever). Totals are rolled into metrics_daily first so
    * dashboards survive the purge. Returns filesystem paths the caller should remove.
    */
+  /** Filterable run/audit listing joined with usage, project and thread titles. */
+  listAuditRuns(f: { source?: string; status?: string; agentId?: string; projectId?: string; threadId?: string; q?: string; limit?: number; offset?: number } = {}): { total: number; runs: Record<string, unknown>[] } {
+    const where: string[] = []; const args: unknown[] = [];
+    if (f.source) { where.push('r.source = ?'); args.push(f.source); }
+    if (f.status) { where.push('r.status = ?'); args.push(f.status); }
+    if (f.agentId) { where.push('r.agent_id = ?'); args.push(f.agentId); }
+    if (f.projectId) { where.push('r.project_id = ?'); args.push(f.projectId); }
+    if (f.threadId) { where.push('r.thread_id = ?'); args.push(f.threadId); }
+    if (f.q) { where.push("(r.task_prompt LIKE ? ESCAPE '\\' OR r.agent_id LIKE ? ESCAPE '\\' OR r.id LIKE ? ESCAPE '\\')"); const like = `%${f.q.replace(/[\\%_]/g, (c) => '\\' + c)}%`; args.push(like, like, like); }
+    const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const total = (this.db.prepare(`SELECT COUNT(*) c FROM runs r ${w}`).get(...args) as { c: number }).c;
+    const runs = this.db.prepare(
+      `SELECT r.id, r.agent_id, r.status, r.model, r.provider_type, r.source, r.thread_id, r.project_id, r.created_at, r.finished_at, r.error,
+              substr(r.task_prompt,1,200) AS prompt, r.audit_path IS NOT NULL AS has_audit,
+              u.tokens_in, u.tokens_out, u.duration_ms, p.name AS project_name
+         FROM runs r LEFT JOIN usage u ON u.run_id=r.id LEFT JOIN projects p ON p.id=r.project_id ${w}
+        ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+    ).all(...args, Math.min(f.limit ?? 50, 200), Math.max(f.offset ?? 0, 0)) as Record<string, unknown>[];
+    return { total, runs };
+  }
+
+  /** Full audit bundle for one run: run row, usage, ordered events, approvals. */
+  auditBundle(runId: string): { run: Record<string, unknown>; usage: unknown; events: unknown[]; approvals: ApprovalRow[] } | undefined {
+    const run = this.db.prepare(`SELECT id, agent_id, session_id, trace_id, status, model, provider_type, task_prompt, definition_hash, created_at, finished_at, error, source, thread_id, project_id FROM runs WHERE id=?`).get(runId) as Record<string, unknown> | undefined;
+    if (!run) return undefined;
+    const usage = this.db.prepare(`SELECT tokens_in, tokens_out, credits, duration_ms, endpoint FROM usage WHERE run_id=?`).get(runId) ?? null;
+    const events = this.db.prepare(`SELECT seq, type, payload_json, at FROM events WHERE run_id=? ORDER BY seq`).all(runId);
+    const approvals = this.db.prepare(`SELECT id FROM approvals WHERE run_id=? ORDER BY requested_at`).all(runId).map((r) => this.getApproval((r as { id: string }).id)!).filter(Boolean);
+    return { run, usage, events, approvals };
+  }
   purge(opts?: { days?: number; scope?: RetentionScope; keepPinned?: boolean; now?: number }): PurgeResult {
     const s = this.getSettings().retention;
     const days = opts?.days ?? s.days;
