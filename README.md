@@ -14,17 +14,14 @@ Everything persists to SQLite (`agents`, `runs`, `events`, `usage`, `transcripts
 
 ---
 
-## Quick start — your first agent in 5 minutes (UI, no JSON)
+## Quick start — chat with Copilot in 2 minutes (UI, no JSON)
 
-New here? This path uses only the browser.
-
-1. **Start the server** (after [Install](#2-install)): `node dist/cli.js serve --port 3100`, then open <http://127.0.0.1:3100/ui/agents?tab=define>.
-2. **Quick-create an agent** — type one sentence describing it (e.g. *"Build responsive landing pages"*) and press **⚡ Quick Create**. Everything else — model, tools, workspace — gets a sensible default; fine-tune later in the full wizard.
-3. **Add your API key** — the Provider step has a **providerApiKey** field. Paste your key; it is sealed with AES-256-GCM before it touches disk and never lands in the definition JSON.
-4. **Publish** — review the assembled definition on the last step and hit **Publish Agent**.
-5. **Chat with it** — open **Chat** in the sidebar, pick the agent and send a task. Reasoning, tool calls, and the reply stream into the thread live; files the agent writes land in its workspace folder (§4.2).
-6. **Re-run & audit** — every chat turn is also a numbered run under **Runs** with a color-coded event timeline; headless runs work from the same JSON via `minions-assembler run` (§6).
-
+1. **Build & start** (after [Install](#2-install)): `npm run build` then `node dist/cli.js serve --port 3100`, and open <http://127.0.0.1:3100/>.
+2. **Onboarding** — add a model provider (OpenAI, Anthropic, Azure, OpenRouter, Ollama or any OpenAI-compatible endpoint). **Save & test** discovers its models. The API key is sealed with AES-256-GCM and never returned by the API.
+3. **Pick a project** — choose a folder in the sidebar's project switcher (folder browser, path input and recent projects). The agent works inside that folder.
+4. **Chat** — the default **GitHub Copilot** agent is ready immediately. Switch to any custom agent (or `.github/agents/*.md` profile found in the project) from the agent picker in the chat header.
+5. **Build your own agent** — **Agents → New agent** opens the advanced builder (identity, model/provider, instructions, tools & permissions, MCP, knowledge). Once saved it appears in the chat agent picker.
+6. **Audit** — every turn is a numbered run with the full event chain. **Audit** lists/filters/exports runs; **Settings → Data & retention** controls how long history is kept (default 7 days).
 Prefer JSON from the start? Skip to [§7](#7-agent-definition-json-schema-v10) — the wizard writes exactly that file.
 
 ---
@@ -96,7 +93,7 @@ node dist/cli.js serve --port 3100 --db ./data/minion.db
 # -> minions-assembler serve on http://127.0.0.1:3100 (docs: /docs)
 ```
 
-On startup the adapter creates `data/` if missing and opens `data/minion.db` — **10 tables** (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`) in **WAL mode** for concurrency-safe reads while runs write. A custom `--db path` gets its parent folder auto-created the same way.
+On startup the adapter creates `data/` if missing and opens `data/minion.db` — **the platform tables** (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`) in **WAL mode** for concurrency-safe reads while runs write. A custom `--db path` gets its parent folder auto-created the same way.
 
 Loopback-only (`127.0.0.1`). Export `MIMO_API_KEY` in the same shell so API-triggered runs can resolve credentials.
 
@@ -129,25 +126,28 @@ AUDIT_LEVEL=full node dist/cli.js run --agentDefinition examples/expense-tracker
 # or per request:  curl -X POST .../api/agents/expense-tracker-dev%401.0.0/runs -d '{"auditLevel":"full"}'
 ```
 
-### 4.3 UI pages — **Minions Cockpit**
+### 4.3 Web app — **Minions Cockpit**
 
-Enterprise control-plane theme (deep-indigo, gradient sidebar, Inter font, toasts, responsive full-width forms, light/dark toggle top-right). Sidebar is flat: Dashboard · Agents (Define wizard + quick-create) · Chat · Runs · MCP Registry · Developers (API Docs). The package/CLI name stays **Minions Assembler**; the dashboard chrome shows **Minions Cockpit**.
+The server serves a React single-page app at `/` (built to `dist/web` by `npm run build`; for development run `npm run dev:web` — Vite proxies `/api` to `127.0.0.1:3100`). The sidebar is split into **Chat** (project switcher, searchable/pinned/archived threads), **Execution** (Agents, Runs, New run) and **Operations** (Dashboard, MCP, Audit, API docs), with Settings and a light/dark toggle at the bottom. `Ctrl+K` opens the command palette.
 
-| URL | Page | What you do |
-|---|---|---|
-| `/` | **Dashboard** | Realtime SVG traffic charts (requests/responses at thousands scale), model-effectiveness plots, runs-by-status, most-used agents, recent activity, workspace facts |
-| `/ui/agents` | **Agents** | All registered definitions (published + drafts) with run counts; **⚡ Quick Create** (one-sentence agent), **✨ Define Agent** (tabbed M3-style wizard), upload/import `.agent.json` + `.agent.md`, drafts, example template, AI **Elaborate**; published agents get Edit + Delete with active-run/session safety checks |
-| `/ui/agents/:id` | **Agent runner** | Task-override input, optional turn-timeout override, ▶ Run button (spinner + inline success/error + credential hint), recent runs for that agent, stored definition with Edit/Delete |
-| `/ui/chat` | **Chat** | Start a 1:1 thread with any registered agent, or a general room routed by `@mention`; saved threads in a rail, live SSE stream (reply text, 💭 reasoning, 🛠 tool log) |
-| `/ui/chat/:id` | **Chat thread** | Persistent multi-turn conversation — history survives reloads (persistent session id), every turn is a numbered auditable run, delete removes thread + transcript |
-| `/ui/mcp` | **MCP Registry** | Register MCP servers with field-level validation, live-probe their tools before/after saving, re-probe, delete; each row links to a detail page with the discovered tool schemas |
-| `/ui/runs` | **Runs** | Merged runs + sessions view (`/ui/sessions` redirects here): all runs with status badges, filter box, model, trace id, session joins |
-| `/ui/runs/:id` | **Run detail** | Stat cards (agent, model, definition hash, timings, turn budget), trace/session pills, **color-coded event timeline** with tool calls (🔧 name + arguments), tool results (✓/✕ + output), harness tool events, permission decisions, expandable JSON payloads, auto-refresh while running, usage panel |
-| `/docs` | **Swagger** | Interactive OpenAPI for every endpoint, with example payloads, response schemas, and documented error codes |
-| `/openapi.json` | contract | Raw OpenAPI 3.x JSON |
+| Route | Page |
+|---|---|
+| `/chat`, `/chat/:threadId` | Chat — project + agent picker, streaming markdown, reasoning and tool-call cards, interactive approvals (allow once / this chat / this project / deny), stop, export |
+| `/agents`, `/agents/new`, `/agents/:id/edit` | Agent library and the advanced agent builder |
+| `/runs`, `/runs/new`, `/runs/:id` | Headless runs and the colour-coded event timeline |
+| `/dashboard`, `/mcp`, `/audit`, `/docs` | Metrics, MCP registry, audit explorer / export, embedded Swagger |
+| `/settings` | Providers, defaults, approval mode, data retention, about |
 
-The layout is full-width and responsive: fluid grids at desktop, forms keep an aligned two-column rhythm, and everything collapses to a single column ≤760–980px with the sidebar hiding on mobile.
+The previous server-rendered UI is still available under `/ui/*` for one more release and will be removed afterwards. `/docs` (Swagger) and `/openapi.json` are unchanged.
 
+#### Approvals, security and retention
+
+- **Approval modes** (per chat, default in Settings): *Ask me* (interactive cards, auto-deny on timeout), *Autopilot* (auto-approve; the destructive-command gate still applies) and *Read-only/strict* (deny anything that needs approval). Decisions are stored in `approvals` and shown in the audit trail.
+- **Headless**: `run --approval autopilot|strict` (`--yes` is an alias for autopilot) and `"approvalMode"` in the run API bodies.
+- **Retention**: chats, runs, events and approvals older than *N* days (default **7**, configurable up to 3650; `0` keeps everything; pinned threads can be exempt) are purged by an hourly sweep, with daily totals kept in `metrics_daily`. Run it on demand with `POST /api/retention/purge`.
+- **Network guard**: Host/Origin checks protect the local API against DNS-rebinding and cross-site requests. Environment: `MINION_ALLOWED_HOSTS` (comma-separated extra hostnames), `MINION_API_TOKEN` (bearer token for API clients — it blocks the browser app, so use it only for headless/API deployments), `MINION_CHAT_CONCURRENCY` (parallel chat turns, default 3).
+
+Legacy page reference (`/ui/*`): Dashboard · Agents (wizard, quick-create, import/export) · Chat · Runs · Run detail · MCP registry.
 ### 4.4 Stop / troubleshoot
 
 `Ctrl+C` in its terminal. If backgrounded on Windows, map port→PID: `netstat -ano | findstr :3100`, then `taskkill /F /PID <pid>`. On macOS/Linux: `lsof -i :3100` → `kill <pid>`.
@@ -340,19 +340,25 @@ Statuses: `200`.
 
 ---
 
-### Chat threads (Chat UI + CLI `chat` commands)
+### Chat threads (web app + CLI `chat` commands)
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/chat/threads` | `{ agentId? }` → open a 1:1 thread with that registered agent, or a general `@mention` room (empty body). 200: thread row (`chat_<8-hex>` id). |
-| `GET /api/chat/threads` | List threads (`?agentId=` filter), newest first. |
-| `GET /api/chat/threads/:id` | One thread + its ordered `messages` transcript (`mtid/role/author/content/run_id`). 404 unknown id. |
-| `POST /api/chat/threads/:id/messages` | `{ content }` → runs one agent turn (persistent session across turns; general rooms route via `@agentname`). 200: `{ userMessageId, replyMessageId, runId, agentId, text, reasoning, tools[] }`. 400 no content / no `@mention` in a general room; 404 unknown thread/agent. |
-| `GET /api/chat/threads/:id/stream` | SSE fan-out while a turn runs: `reasoning`, `tool-start`, `tool-complete`, `reply` events — exactly what the Chat UI renders live. |
+| `GET /api/chat/agents?projectId=` | Selectable agents: the built-in default (`copilot-default@builtin`), registered custom agents and the project's `.github/agents` profiles. |
+| `POST /api/chat/threads` | `{ agentId?, projectId?, model?, title? }` → new thread (defaults to the default agent). |
+| `GET /api/chat/threads` | `?agentId&projectId&q&archived` — newest first, pinned first. |
+| `GET /api/chat/threads/:id` | Thread + ordered `messages`, `pendingApprovals` and `busy`. |
+| `PATCH /api/chat/threads/:id` | `title, pinned, archived, agentId, projectId, model, approvalMode` (409 while a turn is running; an agent switch inserts a divider message and starts a fresh SDK session). |
+| `POST /api/chat/threads/:id/messages` | `{ content }` → **202** and the turn streams over SSE; `?wait=true` blocks and returns `{ userMessageId, replyMessageId, runId, agentId, text }`. 412 no provider configured, 409 turn already running, 502 turn failed. |
+| `POST /api/chat/threads/:id/cancel` | Stop the running turn. |
+| `GET /api/chat/threads/:id/events` | Typed SSE (`turn-start, delta, reasoning, tool-start, tool-complete, approval-request, approval-resolved, usage, done, error, cancelled`) with `Last-Event-ID` resume and a `ready` event. |
+| `GET /api/chat/threads/:id/export?format=md\|json` | Download a transcript. |
 | `DELETE /api/chat/threads/:id` | Remove the thread and its transcript. |
+| `POST /api/approvals/:id` | `{ allow, scope: once\|chat\|project }` — answer an approval request; `GET /api/approvals` lists them. |
 
-Chat turns are ordinary runs: each creates a `run_<id>` row (visible in **Runs** and `GET /api/runs/:id/events`) with the full audit chain. Agents that declare `knowledge.workingDirectory` operate inside that workspace (their tool calls are confined to it); otherwise each thread gets its own `.chats/<threadId>` folder.
+Platform endpoints: `/api/bootstrap`, `/api/settings` (GET/PATCH), `/api/providers` (+ `/:id/default`, `/:id/test`, `/:id/models`), `/api/projects` (+ `/:id/agents`), `/api/fs/browse`, `/api/retention` (+ `POST /purge`), `/api/metrics/daily`, `/api/audit/runs` (filters `source, status, agentId, projectId, threadId, q, limit, offset`) and `/api/audit/runs/:id/export`. All are documented in Swagger (`/docs`, tag `platform`).
 
+Chat turns are ordinary runs: each creates a `run_<id>` row (visible in **Runs** and `GET /api/runs/:id/events`) with the full audit chain. Agents that declare `knowledge.workingDirectory` operate inside that workspace; otherwise the thread's project folder is used (or a per-thread `.chats/<threadId>` folder when no project is selected).
 ### Utility endpoints (credentials, providers, persona, inline runs)
 
 | Endpoint | Purpose |
@@ -482,7 +488,7 @@ CLI runs resolve `mcp.use` from the same `--db` registry; unknown refs exit code
 minions-assembler validate --agentDefinition <path>
 minions-assembler run      --agentDefinition <path> [--task <text>] [--sessionId <id>] [--resume]
                           [--no-stream] [--output-format text|json] [--share <path>]
-                          [--db <path>] [--yes]
+                          [--db <path>] [--approval autopilot|strict] [--yes]
 minions-assembler import-md --file <path> [--no-register] [--db <path>]
 minions-assembler mcp register …  /  mcp-list [--db <path>]
 minions-assembler serve    [--port <n>] [--db <path>]
@@ -680,7 +686,12 @@ Live-verified this build: typecheck clean · unit tests (`tests/`, via `vitest.c
 | `usage` | tokens in/out, credits, duration, endpoint, request id |
 | `transcripts` | shared transcript path + SHA-256 |
 | `credentials` | named secrets vault — AES-256-GCM `enc:v1:` sealed values |
-| `chat_threads` / `chat_messages` | Chat threads (1:1 agent or general `@mention`) and their persistent transcripts |
+| `chat_threads` / `chat_messages` | Chat threads (agent + project bound) and their persistent transcripts |
+| `providers` | Model providers (BYOK); key material lives in `credentials` |
+| `projects` | Recently opened project folders |
+| `settings` | Key/value application settings (retention, approvals, defaults, onboarding) |
+| `approvals` | Tool-permission requests and decisions (audit trail) |
+| `metrics_daily` | Per-day run/token rollups that survive retention purges |
 
 Postgres ships as an interface-conformant stub ([`src/store/postgres-stub.ts`](src/store/postgres-stub.ts)); the swap is mechanical.
 
@@ -689,7 +700,7 @@ Postgres ships as an interface-conformant stub ([`src/store/postgres-stub.ts`](s
 ## 11. Known limitations
 
 - **Postgres** = stub (SQLite-first scope).
-- **Serve auth**: none beyond loopback; front with proxy + token before shared exposure.
+- **Serve auth**: Host/Origin checks plus an optional `MINION_API_TOKEN` for API clients (which also blocks the browser app); there are no user accounts — front with a proxy before shared exposure.
 - **`maxAiCredits`**: hard SDK floor of 30 (`Minimum session limit is 30 AI credits`).
 - **Plugin file agents** (`agents/*.md`) not yet mapped — inline `agents[]` only.
 - **MCP probes**: one-shot initialize→tools/list per call (no persistent connection). OAuth-protected remote servers use the built-in Authorization Code + PKCE flow (`POST /api/mcp/oauth/start` → browser → `GET /api/mcp/oauth/callback`, status at `GET /api/mcp/oauth/status`); servers without dynamic client registration (e.g. GitHub) need a pre-registered OAuth client first.
