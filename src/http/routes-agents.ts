@@ -542,13 +542,13 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
         ? loadAgentMarkdown(body.path)
         : (() => { const p = parseAgentMarkdown(body.markdown ?? ''); return { definition: mdProfileToDefinition(p), profile: p }; })();
       const validated = validateDefinitionObject(definition);
-      const defJson = JSON.stringify(validated.definition);
+      const defJson = JSON.stringify(sealDefinitionSecrets(validated.definition));
       const hash = createHash('sha256').update(defJson).digest('hex').slice(0, 16);
       let id: string | null = null;
       if (body.register !== false) {
         id = db.saveAgent(validated.definition.metadata.name, validated.definition.metadata.version, defJson, hash);
       }
-      return { id, definitionHash: hash, warnings: validated.warnings, profile: { name: profile.name, description: profile.description, model: profile.model, tools: profile.tools }, definition: validated.definition };
+      return { id, definitionHash: hash, warnings: validated.warnings, profile: { name: profile.name, description: profile.description, model: profile.model, tools: profile.tools }, definition: redactedForLog(validated.definition) };
     } catch (e) {
       return reply.code(400).send({ error: `import failed: ${(e as Error).message}` });
     }

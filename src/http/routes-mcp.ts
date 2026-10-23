@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { validateMcpConfig, probeMcpTools } from '../mcp/mcp.js';
+import { validateMcpConfig, probeMcpTools, sealMcpSecrets } from '../mcp/mcp.js';
 import type { McpTool, AuthHint, McpServerConfig } from '../mcp/mcp.js';
 import type { DbAdapter } from '../store/adapter.js';
 import { encryptToToken, resolveProviderApiKeyValue } from '../core/crypto.js';
@@ -63,7 +63,7 @@ export async function registerMcpRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     if (!body.name) return reply.code(400).send({ error: 'name is required' });
     if (!body.config) return reply.code(400).send({ error: 'config is required' });
     try {
-      const { config } = await validateMcpConfig(body.config);
+      const config = sealMcpSecrets((await validateMcpConfig(body.config)).config);
       let toolsJson: string | undefined;
       let tools: McpTool[] = [];
       if (body.probe) {

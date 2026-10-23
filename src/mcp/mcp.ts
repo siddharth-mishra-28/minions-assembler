@@ -1,6 +1,6 @@
 /** MCP server registry helpers: validation, expandMcpRefs, live tool discovery. */
 import { spawn } from 'node:child_process';
-import { decryptFromToken, isEncryptedToken } from '../core/crypto.js';
+import { decryptFromToken, encryptToToken, isEncryptedToken } from '../core/crypto.js';
 
 /** Registry config shape (what users POST). `cwd`/`timeoutMs` are accepted aliases of the SDK's `workingDirectory`/`timeout`. */
 export interface McpServerConfig {
@@ -353,6 +353,28 @@ export function resolveMcpProbeAuth<T extends { headers?: Record<string, string>
       }
     }
     if (changed) out = { ...out, env };
+  }
+  return out;
+}
+
+const SECRET_ENV_KEY = /(key|token|secret|pass(word)?|auth|credential)/i;
+
+/**
+ * Seal literal secrets before a registry config is persisted so plaintext never rests in the DB:
+ * stdio `env` values with secret-like names and a literal `headers.Authorization`.
+ * `${ENV_VAR}` references and already-sealed `enc:v1:` tokens are left untouched.
+ */
+export function sealMcpSecrets<T extends { headers?: Record<string, string>; env?: Record<string, string> }>(cfg: T): T {
+  const keep = (v: string) => !v || /^\$\{[A-Z0-9_]+\}$/.test(v) || isEncryptedToken(v);
+  let out = cfg;
+  if (out.env) {
+    const env = Object.fromEntries(Object.entries(out.env).map(([k, v]) => [k, SECRET_ENV_KEY.test(k) && !keep(v) ? encryptToToken(v) : v]));
+    out = { ...out, env };
+  }
+  const authz = out.headers?.Authorization;
+  if (authz) {
+    const m = /^(Bearer )?(.*)$/.exec(authz)!;
+    if (!keep(m[2])) out = { ...out, headers: { ...out.headers, Authorization: `${m[1] ?? ''}${encryptToToken(m[2])}` } };
   }
   return out;
 }
