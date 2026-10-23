@@ -289,3 +289,13 @@ describe('web app serving', () => {
     expect(api.statusCode).toBe(404);
   });
 });
+
+describe('run stop endpoint', () => {
+  it('404s for an unknown run and reports stopped:false for one that is not executing', async () => {
+    expect((await json('POST', '/api/runs/run_missing/stop')).status).toBe(404);
+    const runId = built.db.createRun('stop-test@1.0.0', 'sess_x', 'tr_x', 'm', 'openai', 'task', 'hash');
+    const r = await json('POST', `/api/runs/${runId}/stop`);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ runId, stopped: false });
+  });
+});

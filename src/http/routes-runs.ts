@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { mkdirSync } from 'node:fs';
-import { executeRun } from '../execution/runner.js';
+import { abortRun, executeRun } from '../execution/runner.js';
 import { validateDefinitionObject } from '../agents/loader.js';
 import type { DbAdapter } from '../store/adapter.js';
 import type { McpServerConfig } from '../mcp/mcp.js';
@@ -147,6 +147,19 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     const run = db.getRun(id);
     if (!run) return reply.code(404).send({ error: `run not found: ${id}` });
     return run;
+  });
+
+  app.post('/api/runs/:id/stop', {
+    schema: {
+      tags: ['runs'],
+      summary: 'Stop an in-flight run',
+      description: 'Kills the run\'s SDK session. The run is then persisted as failed/aborted by the runner. Returns stopped:false if the run is not currently executing.',
+      response: { 404: { ...errorSchema, description: 'Unknown run id' } },
+    },
+  }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    if (!db.getRun(id)) return reply.code(404).send({ error: `run not found: ${id}` });
+    return { runId: id, stopped: await abortRun(id) };
   });
 
   app.get('/api/runs/:id/events', {

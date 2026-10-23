@@ -35,7 +35,7 @@ export default function RunDetail() {
   const threadId = run?.thread_id ?? null;
   const live = run?.status === 'running' || run?.status === 'queued';
 
-  const stop = useApiMutation(() => api(`/api/chat/threads/${encodeURIComponent(threadId ?? '')}/cancel`, { method: 'POST' }), {
+  const stop = useApiMutation(() => (threadId ? api(`/api/chat/threads/${encodeURIComponent(threadId)}/cancel`, { method: 'POST' }) : api(`/api/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' })), {
     onSuccess: () => { toast.ok('Stop requested'); qc.invalidateQueries({ queryKey: opsKeys.bundle(id) }); },
   });
 
@@ -53,7 +53,7 @@ export default function RunDetail() {
       <Button variant="ghost" onClick={() => nav('/runs')}><ArrowLeft className="size-4" />Runs</Button>
       {run && (
         <>
-          {live && threadId && <Button variant="danger" loading={stop.isPending} onClick={() => stop.mutate(undefined)}><Square className="size-3.5" />Stop</Button>}
+          {live && <Button variant="danger" loading={stop.isPending} onClick={() => stop.mutate(undefined)}><Square className="size-3.5" />Stop</Button>}
           {threadId && <Button variant="secondary" onClick={() => nav(`/chat/${threadId}`)}><MessageSquare className="size-4" />Open chat</Button>}
           {run.agent_id && !threadId && <Button variant="secondary" onClick={() => nav(`/runs/new?agent=${encodeURIComponent(run.agent_id ?? '')}`)}><Play className="size-4" />Run again</Button>}
           <Button variant="secondary" onClick={() => copyText(json(), 'Bundle copied')}><Copy className="size-4" />Copy JSON</Button>
