@@ -1,4 +1,4 @@
-﻿import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { BookOpen, Command, Gauge, History, LayoutDashboard, Moon, PlayCircle, PlugZap, ScrollText, Settings, Sun, Users } from 'lucide-react';
 import { useApp } from '@/lib/store';
 import { useBootstrap } from '@/lib/queries';
@@ -45,7 +45,7 @@ export function Shell() {
           <Item to="/dashboard" icon={LayoutDashboard} label="Dashboard" />
           <Item to="/mcp" icon={PlugZap} label="MCP registry" />
           <Item to="/audit" icon={ScrollText} label="Audit & logs" />
-          <Item to="/docs" icon={BookOpen} label="API docs" />
+          <Item to="/developers" icon={BookOpen} label="API docs" />
         </div>
         <div className="flex items-center gap-1 border-t border-border px-2 py-2">
           <NavLink to="/settings" className={({ isActive }) => cn('flex flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-sm', isActive ? 'bg-surface-2' : 'text-muted hover:bg-surface-2/60 hover:text-fg')}>

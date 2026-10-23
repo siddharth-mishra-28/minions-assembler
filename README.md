@@ -135,7 +135,7 @@ The server serves a React single-page app at `/` (built to `dist/web` by `npm ru
 | `/chat`, `/chat/:threadId` | Chat — project + agent picker, streaming markdown, reasoning and tool-call cards, interactive approvals (allow once / this chat / this project / deny), stop, export |
 | `/agents`, `/agents/new`, `/agents/:id/edit` | Agent library and the advanced agent builder |
 | `/runs`, `/runs/new`, `/runs/:id` | Headless runs and the colour-coded event timeline |
-| `/dashboard`, `/mcp`, `/audit`, `/docs` | Metrics, MCP registry, audit explorer / export, embedded Swagger |
+| `/dashboard`, `/mcp`, `/audit`, `/developers` | Metrics, MCP registry, audit explorer / export, API docs (embeds Swagger at `/docs`) |
 | `/settings` | Providers, defaults, approval mode, data retention, about |
 
 The previous server-rendered UI is still available under `/ui/*` for one more release and will be removed afterwards. `/docs` (Swagger) and `/openapi.json` are unchanged.

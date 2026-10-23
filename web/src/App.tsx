@@ -1,4 +1,4 @@
-﻿import { lazy, Suspense } from 'react';
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Shell } from '@/components/Shell';
 import { Spinner } from '@/components/ui';
@@ -34,7 +34,7 @@ export default function App() {
     <Suspense fallback={<Loading />}>
       <Routes>
         {!boot.onboardingCompleted && <Route path="*" element={<Onboarding />} />}
-        <Route element={<Shell />}>
+        {boot.onboardingCompleted && <Route element={<Shell />}>
           <Route index element={<Navigate to="/chat" replace />} />
           <Route path="chat" element={<Chat />} />
           <Route path="chat/:threadId" element={<Chat />} />
@@ -47,10 +47,10 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="mcp" element={<Mcp />} />
           <Route path="audit" element={<Audit />} />
-          <Route path="docs" element={<ApiDocs />} />
+          <Route path="developers" element={<ApiDocs />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
-        </Route>
+        </Route>}
       </Routes>
     </Suspense>
   );

@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Gauge, History, MessageSquarePlus, Moon, PlayCircle, PlugZap, ScrollText, Settings, Users } from 'lucide-react';
 import { useApp } from '@/lib/store';
@@ -36,7 +36,7 @@ export function CommandPalette() {
       { id: 'dash', label: 'Dashboard', hint: 'Operations', icon: Gauge, run: go('/dashboard') },
       { id: 'mcp', label: 'MCP registry', hint: 'Operations', icon: PlugZap, run: go('/mcp') },
       { id: 'audit', label: 'Audit & logs', hint: 'Operations', icon: ScrollText, run: go('/audit') },
-      { id: 'docs', label: 'API docs', hint: 'Operations', icon: BookOpen, run: go('/docs') },
+      { id: 'docs', label: 'API docs', hint: 'Operations', icon: BookOpen, run: go('/developers') },
       { id: 'settings', label: 'Settings', icon: Settings, run: go('/settings') },
       { id: 'theme', label: 'Toggle light / dark theme', icon: Moon, run: toggleTheme },
       ...threads.slice(0, 30).map((t) => ({ id: `t-${t.id}`, label: t.title, hint: 'Chat', icon: MessageSquarePlus, run: go(`/chat/${t.id}`) })),

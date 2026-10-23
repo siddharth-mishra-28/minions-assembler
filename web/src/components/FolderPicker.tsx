@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowUp, Folder, GitBranch, HardDrive, Home } from 'lucide-react';
 import { api, errMsg } from '@/lib/api';
@@ -35,7 +35,7 @@ export function FolderPicker({ open, onClose, onPick, busy }: { open: boolean; o
           {q.data?.isGitRepo && <span className="ml-auto inline-flex items-center gap-1 text-xs text-ok"><GitBranch className="size-3.5" />Git repository</span>}
         </div>
         <div className="h-72 overflow-y-auto rounded-lg border border-border">
-          {q.isLoading ? <div className="flex h-full items-center justify-center"><Spinner /></div>
+          {q.isLoading || !q.data && !q.error ? <div className="flex h-full items-center justify-center"><Spinner /></div>
             : q.error ? <div className="p-4 text-sm text-danger">{errMsg(q.error)}</div>
             : q.data!.entries.length === 0 ? <div className="p-4 text-sm text-muted">No sub-folders.</div>
             : q.data!.entries.map((e) => (
