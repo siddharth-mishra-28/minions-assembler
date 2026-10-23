@@ -70,11 +70,14 @@ export interface RunOptions {
  * machinery executeRun already uses in its own cleanup.
  */
 const activeStops = new Map<string, () => Promise<void>>();
+/** Runs explicitly aborted via abortRun — so the error path records `aborted`, not `failed`. */
+const abortedRuns = new Set<string>();
 
 /** Kill (stop) an in-flight run's SDK session; resolves whether or not it was active. */
 export async function abortRun(runId: string): Promise<boolean> {
   const stop = activeStops.get(runId);
   if (!stop) return false;
+  abortedRuns.add(runId);
   try { await stop(); } catch { /* session may already be dead */ }
   activeStops.delete(runId);
   return true;
@@ -341,6 +344,7 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     try { opts.db.upsertSession({ sessionId, status: 'idle-done', summary: text.slice(0, 200) }); } catch { /* best-effort */ }
     try { await (session as { disconnect: () => Promise<void> }).disconnect(); } catch { /* noop */ }
     activeStops.delete(runId);
+    abortedRuns.delete(runId);
     await client.stop();
     recordUsageTotals();
     await usageProxy?.close();
@@ -348,9 +352,10 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
   } catch (err) {
     const message = (err as Error).message;
     activeStops.delete(runId);
-    persist('run.error', { error: message }, true, AUDIT_RANK.minimal);
-    opts.db.finishRun(runId, 'failed', message);
-    try { opts.db.upsertSession({ sessionId: (typeof sessionId === 'string' ? sessionId : 'unknown'), status: 'failed', summary: message.slice(0, 200) }); } catch { /* best-effort */ }
+    const aborted = abortedRuns.delete(runId);
+    persist(aborted ? 'run.aborted' : 'run.error', aborted ? { reason: message } : { error: message }, true, AUDIT_RANK.minimal);
+    opts.db.finishRun(runId, aborted ? 'aborted' : 'failed', message);
+    try { opts.db.upsertSession({ sessionId: (typeof sessionId === 'string' ? sessionId : 'unknown'), status: aborted ? 'aborted' : 'failed', summary: message.slice(0, 200) }); } catch { /* best-effort */ }
     try { await client.stop(); } catch { /* noop */ }
     recordUsageTotals();
     await usageProxy?.close();
