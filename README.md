@@ -258,6 +258,13 @@ Statuses: `200` (`status` ∈ queued|running|idle|aborted|failed|done).
 ```
 Statuses: `200` · `404`.
 
+### POST /api/runs/:id/stop — abort a live headless run
+Signals the runner's active executor to stop (`abortRun`). Unknown run → `404`; a run that is not currently executing returns `{ "stopped": false }` without error.
+```jsonc
+// 200  { "runId": "run_a5303917", "stopped": true }
+```
+Statuses: `200` · `404`.
+
 ### GET /api/runs/:id/events — ordered audit events (pollable)
 `?afterSeq=N` returns only events with seq > N (incremental polling; `0`/omitted = all).
 ```bash

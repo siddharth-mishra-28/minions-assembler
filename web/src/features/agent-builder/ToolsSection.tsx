@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plug, Plus, Search } from 'lucide-react';
-import { Button, Field, Input, Modal, Select, Spinner, Textarea, Toggle, Badge, cn, toast } from '@/components/ui';
+import { Pencil, Plug, Plus, Search, Trash2 } from 'lucide-react';
+import { Button, Field, IconButton, Input, Modal, Select, Spinner, Textarea, Toggle, Badge, cn, toast } from '@/components/ui';
 import { api, errMsg } from '@/lib/api';
 import { useBuilder } from './context';
 import { useBuiltinTools, useMcpServers } from './hooks';
@@ -75,8 +75,78 @@ export default function ToolsSection() {
           </div>
         </details>
       </SectionCard>
+      <CustomToolsCard />
       <McpCard />
     </div>
+  );
+}
+
+interface CustomTool { name: string; description?: string; parametersSchema?: Record<string, unknown>; skipPermission?: boolean }
+
+function CustomToolsCard() {
+  const { def, set } = useBuilder();
+  const tools = ((def.tools?.custom ?? []) as CustomTool[]);
+  const [editing, setEditing] = useState<{ index: number; tool: CustomTool } | null>(null);
+  const save = (next: CustomTool[]) => set('tools.custom', next.length ? next : undefined);
+
+  return (
+    <SectionCard title="Custom tools" description="Declare tools the agent can call. The harness invokes them by name; wire the implementation in the tool handler at run time."
+      right={<Button size="sm" onClick={() => setEditing({ index: -1, tool: { name: '', description: '', parametersSchema: { type: 'object', properties: {} } } })}><Plus className="size-3.5" />Add tool</Button>}>
+      {tools.length === 0 && <Callout tone="info">No custom tools declared. Built-in and MCP tools are configured above; add a custom tool when the agent needs a capability the harness does not provide.</Callout>}
+      <div className="space-y-2">
+        {tools.map((t, i) => (
+          <div key={`${t.name}-${i}`} className="flex items-start gap-3 rounded-lg border border-border p-3">
+            <span className="min-w-0 flex-1">
+              <span className="font-mono text-xs font-medium">{t.name}</span>
+              {t.description && <span className="block text-xs text-muted">{t.description}</span>}
+              <span className="mt-1 block font-mono text-[10px] text-muted">{Object.keys(t.parametersSchema?.properties ?? {}).length} parameter(s){t.skipPermission ? ' · skips permission checks' : ''}</span>
+            </span>
+            <IconButton label={`Edit ${t.name}`} onClick={() => setEditing({ index: i, tool: { ...t } })}><Pencil className="size-3.5" /></IconButton>
+            <IconButton label={`Delete ${t.name}`} onClick={() => save(tools.filter((_, j) => j !== i))}><Trash2 className="size-3.5 text-danger" /></IconButton>
+          </div>
+        ))}
+      </div>
+      {editing && (
+        <CustomToolModal tool={editing.tool} onClose={() => setEditing(null)}
+          onSave={(tool) => {
+            const next = editing.index >= 0 ? tools.map((t, j) => (j === editing.index ? tool : t)) : [...tools, tool];
+            save(next); setEditing(null);
+          }} />
+      )}
+    </SectionCard>
+  );
+}
+
+function CustomToolModal({ tool, onSave, onClose }: { tool: CustomTool; onSave: (t: CustomTool) => void; onClose: () => void }) {
+  const [name, setName] = useState(tool.name);
+  const [description, setDescription] = useState(tool.description ?? '');
+  const [schemaText, setSchemaText] = useState(JSON.stringify(tool.parametersSchema ?? { type: 'object', properties: {} }, null, 2));
+  const [skip, setSkip] = useState(!!tool.skipPermission);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = () => {
+    if (!/^[A-Za-z0-9_:-]+$/.test(name.trim())) { setErr('Name is required and may contain letters, digits, _ : -'); return; }
+    let schema: Record<string, unknown>;
+    try {
+      schema = JSON.parse(schemaText || '{}') as Record<string, unknown>;
+      if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) throw new Error('not an object');
+    } catch (e) { setErr(`parametersSchema must be a JSON object: ${(e as Error).message}`); return; }
+    onSave({ name: name.trim(), description: description.trim() || undefined, parametersSchema: schema, skipPermission: skip || undefined });
+  };
+
+  return (
+    <Modal open onClose={onClose} title={tool.name ? `Edit custom tool · ${tool.name}` : 'Add custom tool'} width="max-w-xl"
+      footer={<><Button onClick={onClose} variant="ghost">Cancel</Button><Button variant="primary" onClick={save}>Save tool</Button></>}>
+      <div className="space-y-4">
+        <Field label="Tool name *"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="lookup_ticket" className="font-mono text-xs" /></Field>
+        <Field label="Description" hint="Shown to the model; describe what the tool does and when to use it."><Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
+        <Field label="Parameters (JSON Schema)" hint='A JSON object, e.g. {"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}'>
+          <Textarea rows={8} className={monoArea} value={schemaText} onChange={(e) => setSchemaText(e.target.value)} />
+        </Field>
+        <Toggle checked={skip} onChange={setSkip} label="Skip permission checks" description="The tool is invoked without an approval gate. Use only for tools that cannot modify files or state." />
+        {err && <Callout tone="danger">{err}</Callout>}
+      </div>
+    </Modal>
   );
 }
 

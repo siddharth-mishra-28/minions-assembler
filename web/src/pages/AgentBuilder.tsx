@@ -124,10 +124,25 @@ export default function AgentBuilder() {
       if (!a || a.getAttribute('target') || !(a.getAttribute('href') ?? '').startsWith('/')) return;
       if (!window.confirm('You have unsaved changes. Leave without saving?')) { e.preventDefault(); e.stopPropagation(); }
     };
+    // Back/forward buttons: the router has already changed the route when this fires,
+    // so a declined change is undone by pushing the builder location back and resyncing.
+    const here = location.pathname + location.search;
+    const pop = () => {
+      if (location.pathname + location.search === here) return;
+      if (!window.confirm('You have unsaved changes. Leave without saving?')) {
+        window.history.pushState(window.history.state, '', here);
+        navigate(here, { replace: true });
+      }
+    };
     window.addEventListener('beforeunload', before);
     document.addEventListener('click', click, true);
-    return () => { window.removeEventListener('beforeunload', before); document.removeEventListener('click', click, true); };
-  }, [dirty]);
+    window.addEventListener('popstate', pop);
+    return () => {
+      window.removeEventListener('beforeunload', before);
+      document.removeEventListener('click', click, true);
+      window.removeEventListener('popstate', pop);
+    };
+  }, [dirty, location.pathname, location.search]);
 
   /* ---------- navigation ---------- */
   const goto = (s: SectionId) => {
