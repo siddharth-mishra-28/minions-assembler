@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import clsx from 'clsx';
@@ -168,7 +168,7 @@ export function Toaster() {
     </div>, document.body);
 }
 
-export function ConfirmButton({ onConfirm, children, confirmLabel = 'Confirm?', ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { onConfirm: () => void; confirmLabel?: string; variant?: Variant; size?: Size }) {
+export function ConfirmButton({ onConfirm, children, confirmLabel = 'Confirm?', ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { onConfirm: () => void; confirmLabel?: string; variant?: Variant; size?: Size; loading?: boolean }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => { if (!armed) return; const t = setTimeout(() => setArmed(false), 3000); return () => clearTimeout(t); }, [armed]);
   return <Button {...rest} variant={armed ? 'danger' : rest.variant ?? 'ghost'} onClick={() => { if (armed) { setArmed(false); onConfirm(); } else setArmed(true); }}>{armed ? confirmLabel : children}</Button>;
