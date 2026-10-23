@@ -138,7 +138,7 @@ export default function Chat() {
             <div className="flex flex-col items-center gap-6 py-16 text-center fade-in">
               <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/15 text-accent"><Bot className="size-7" /></div>
               <div>
-                <h1 className="text-xl font-semibold">Chat with {agentName}</h1>
+                <h1 className="text-xl font-semibold">Chat with your minions</h1>
                 <p className="mt-1 text-sm text-muted">{project ? <>Working in <span className="font-mono">{project.path}</span></> : 'Select a project in the sidebar to give the agent access to your code.'}</p>
               </div>
               <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
