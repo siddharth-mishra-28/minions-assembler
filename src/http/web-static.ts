@@ -12,7 +12,7 @@ export function findWebRoot(): string | undefined {
   return undefined;
 }
 
-const NON_SPA = /^\/(api|docs|openapi\.json|ui)(\/|$|\.)/;
+const NON_SPA = /^\/(api|docs|openapi\.json|ui|assets)(\/|$|\.)/;
 
 /** Serves the built web app with an SPA fallback. Without a build, `/` explains how to build it. */
 export async function registerWebApp(app: FastifyInstance): Promise<void> {

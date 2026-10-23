@@ -264,3 +264,28 @@ describe('retention', () => {
     expect(m.status).toBe(200);
   });
 });
+
+describe('agent elaboration via a saved provider', () => {
+  it('rejects an unknown providerRef and a missing model without leaking secrets', async () => {
+    const unknown = await json('POST', '/api/agents/elaborate', { field: 'systemPrompt', content: 'x', provider: { providerRef: 'nope' } });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toContain('not found');
+    const none = await json('POST', '/api/agents/elaborate', { field: 'systemPrompt', content: 'x', provider: {} });
+    expect(none.status).toBe(400);
+  });
+});
+
+describe('web app serving', () => {
+  it('falls back to index.html for SPA routes but 404s unknown assets and api paths', async () => {
+    const { findWebRoot } = await import('../src/http/web-static.js');
+    if (!findWebRoot()) return;
+    const page = await app.inject({ method: 'GET', url: '/agents/new', headers: { accept: 'text/html' } });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['content-type']).toContain('text/html');
+    expect(page.headers['cache-control']).toContain('no-cache');
+    const asset = await app.inject({ method: 'GET', url: '/assets/nope.js', headers: { accept: 'text/html' } });
+    expect(asset.statusCode).toBe(404);
+    const api = await app.inject({ method: 'GET', url: '/api/nope', headers: { accept: 'text/html' } });
+    expect(api.statusCode).toBe(404);
+  });
+});

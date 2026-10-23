@@ -102,7 +102,6 @@ export async function buildServer(dbPath = './data/minion.db') {
   await app.register(swaggerUi, { routePrefix: '/docs' });
 
   await registerSystemRoutes(app, { db, dbPath, workspace, serverLog, app });
-  await registerAgentRoutes(app, { db });
   await registerRunRoutes(app, { db, runQueue });
   await registerMcpRoutes(app, { db });
   const mcpRegistry = (): { registry: Map<string, McpServerConfig>; tools: Map<string, string[]> } => {
@@ -118,6 +117,7 @@ export async function buildServer(dbPath = './data/minion.db') {
     return { registry, tools };
   };
   const platform = new PlatformStore(db);
+  await registerAgentRoutes(app, { db, platform });
   const hub = new ChatHub();
   const broker = new ApprovalBroker(platform, hub);
   const auditRoot = resolve(join(dirname(resolve(dbPath)), 'audit'));

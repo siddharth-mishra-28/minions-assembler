@@ -5,6 +5,7 @@ import type { DbAdapter } from '../store/adapter.js';
 import { errorSchema } from './route-schemas.js';
 import { sealDefinitionSecrets, resolveProviderKey, providerAuthHeaders } from '../agents/provider-keys.js';
 import { BUILTIN_TOOLS, BUILTIN_TOOLS_SOURCE } from '../agents/tools-policy.js';
+import type { PlatformStore } from '../store/platform.js';
 import { SECTION_CATALOG, captureDefaultSystemMessage } from '../agents/default-prompt.js';
 import { parseAgentMarkdown, mdProfileToDefinition, loadAgentMarkdown, scanInstructionFiles } from '../agents/md-profile.js';
 
@@ -13,7 +14,7 @@ import { parseAgentMarkdown, mdProfileToDefinition, loadAgentMarkdown, scanInstr
  * definition export, the wizard's Elaborate/Builtin-tools/Template helpers.
  * Provider-key sealing/resolution lives in provider-keys.ts.
  */
-export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAdapter }): Promise<void> {
+export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAdapter; platform?: PlatformStore }): Promise<void> {
   const { db } = ctx;
 
   const FIXTURE_PATH = './examples/expense-tracker-dev.agent.json';
@@ -169,8 +170,8 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
           temperature: { type: 'number', minimum: 0, maximum: 2 },
           provider: {
             type: 'object',
-            required: ['baseUrl', 'model'],
             properties: {
+              providerRef: { type: 'string', description: 'Id of a provider configured in Settings; supplies baseUrl, key and (if omitted) model' },
               type: { type: 'string' },
               baseUrl: { type: 'string' },
               model: { type: 'string' },
@@ -183,12 +184,22 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
       },
     },
   }, async (req, reply) => {
-    const { field, content, context, provider, maxTokens, timeoutMs, temperature } = req.body as {
+    const body = req.body as {
       field: string; content: string; context?: Record<string, unknown>;
       maxTokens?: number; timeoutMs?: number; temperature?: number;
-      provider: { type?: string; baseUrl: string; model: string; providerApiKey?: string; credentialEnv?: string; apiKey?: string };
+      provider: { providerRef?: string; type?: string; baseUrl?: string; model?: string; providerApiKey?: string; credentialEnv?: string; apiKey?: string };
     };
-    const resolved = resolveProviderKey(provider);
+    const { field, content, context, maxTokens, timeoutMs, temperature } = body;
+    let provider = body.provider;
+    if (provider.providerRef) {
+      const p = ctx.platform?.getProvider(provider.providerRef);
+      const secret = p ? ctx.platform?.getProviderSecret(p.id) : undefined;
+      if (!p) return reply.code(400).send({ error: `Cannot elaborate: provider '${provider.providerRef}' not found` });
+      if (!secret) return reply.code(400).send({ error: `Cannot elaborate: provider '${p.name}' has no API key` });
+      provider = { ...provider, type: p.type, baseUrl: p.baseUrl, model: provider.model || p.defaultModel || undefined, apiKey: secret };
+    }
+    if (!provider.baseUrl || !provider.model) return reply.code(400).send({ error: 'Cannot elaborate: provider.baseUrl and provider.model are required (or pass provider.providerRef)' });
+    const resolved = resolveProviderKey(provider as Parameters<typeof resolveProviderKey>[0]);
     if (resolved.error) return reply.code(400).send({ error: `Cannot elaborate: ${resolved.error}` });
     const key = resolved.key;
     const cleanUrl = provider.baseUrl.replace(/\/+$/, '');
