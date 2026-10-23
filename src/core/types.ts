@@ -80,6 +80,8 @@ export interface AgentDefinition {
   };
   provider: {
     type: 'openai' | 'azure' | 'anthropic';
+    /** Id of a Settings provider; resolved at run time (see resolveProviderRef). */
+    providerRef?: string;
     baseUrl: string; model: string; wireApi?: 'completions' | 'responses';
     /**
      * Fixed attribute name for the provider credential. Value is one of:

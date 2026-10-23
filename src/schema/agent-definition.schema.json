@@ -4,7 +4,7 @@
   "title": "AgentDefinition v1.0",
   "description": "Single source of truth for a custom GitHub Copilot agent. Maps to Copilot SDK createSession/send options.",
   "type": "object",
-  "required": ["schemaVersion", "metadata", "task", "provider"],
+  "required": ["schemaVersion", "metadata", "provider"],
   "additionalProperties": false,
   "properties": {
     "schemaVersion": { "type": "string", "const": "1.0" },
@@ -30,7 +30,7 @@
       "additionalProperties": false,
       "properties": {
         "useCopilotDefaultPrompt": {
-          "description": "Whether the agent keeps the SDK-managed default Copilot CLI system prompt (preamble, identity, tone, tool_instructions, safety…). Default true. append/customize keep it; replace drops it (and its guardrails).",
+          "description": "Whether the agent keeps the SDK-managed default Copilot CLI system prompt (preamble, identity, tone, tool_instructions, safetyâ€¦). Default true. append/customize keep it; replace drops it (and its guardrails).",
           "type": "boolean",
           "default": true
         },
@@ -188,7 +188,7 @@
         },
         "permissionPolicy": { "type": "string", "enum": ["deny-all", "approve-all-ci-only", "pattern-list"], "default": "deny-all" },
         "builtins": {
-          "description": "Built-in tool availability + per-tool decisions. default: posture for any tool without a perTool entry (built-in, MCP and custom); all: select-all toggle; perTool: name (bare or source-qualified builtin:/mcp:/custom:) → allow|ask|deny. 'ask' resolves as an audited deny in headless runs.",
+          "description": "Built-in tool availability + per-tool decisions. default: posture for any tool without a perTool entry (built-in, MCP and custom); all: select-all toggle; perTool: name (bare or source-qualified builtin:/mcp:/custom:) â†’ allow|ask|deny. 'ask' resolves as an audited deny in headless runs.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -201,7 +201,7 @@
           }
         },
         "allowDestructive": {
-          "description": "Allow destructive update/delete operations (rm -rf, forced pushes, DROP…), process-kill commands (taskkill/pkill/killall/kill/Stop-Process) and destructive-flagged MCP tool calls. Default false.",
+          "description": "Allow destructive update/delete operations (rm -rf, forced pushes, DROPâ€¦), process-kill commands (taskkill/pkill/killall/kill/Stop-Process) and destructive-flagged MCP tool calls. Default false.",
           "type": "boolean",
           "default": false
         },
@@ -269,9 +269,11 @@
     "provider": {
       "description": "BYOK provider. `providerApiKey` is the fixed credential attribute: an `enc:v1:` token (AES-256-GCM at rest), a `${ENV_VAR}` reference, or a literal key that is sealed to a token on save. Legacy `credentialEnv` is still accepted.",
       "type": "object",
-      "required": ["type", "baseUrl", "model", "providerApiKey"],
+      "required": ["model"],
+      "anyOf": [ { "required": ["type", "baseUrl", "providerApiKey"], "properties": { "type": {}, "baseUrl": {}, "providerApiKey": {} } }, { "required": ["providerRef"], "properties": { "providerRef": {} } } ],
       "additionalProperties": false,
       "properties": {
+        "providerRef": { "description": "Id of a provider configured in Settings. When set, type/baseUrl/credential are resolved from it at run time and any inline values act only as a snapshot.", "type": "string", "minLength": 1 },
         "type": { "type": "string", "enum": ["openai", "azure", "anthropic"] },
         "baseUrl": { "type": "string", "minLength": 1 },
         "model": { "type": "string", "minLength": 1 },

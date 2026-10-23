@@ -42,6 +42,13 @@ export function validateDefinitionObject(json: unknown): LoadResult {
   }
   const def = resolveEnvRefs(json) as AgentDefinition;
   const warnings: string[] = [];
+  // Chat-only agents omit 	ask; provider-ref agents omit inline connection details. Normalise so downstream code keeps its invariants.
+  if (!def.task) def.task = { prompt: '' };
+  if (def.provider.providerRef) {
+    def.provider.type ??= 'openai';
+    def.provider.baseUrl ??= 'provider-ref';
+    def.provider.providerApiKey ??= 'provider-ref';
+  }
 
   if (def.persona?.systemMessage?.mode === 'replace' && !def.persona.systemMessage.acknowledgeReplaceRisks) {
     throw new Error('persona.systemMessage.mode=replace requires acknowledgeReplaceRisks:true (it drops SDK guardrails)');
@@ -80,7 +87,9 @@ export function validateDefinitionObject(json: unknown): LoadResult {
       warnings.push(`attachment path does not exist: ${p.path}`);
     }
   }
-  if (def.provider.providerApiKey) {
+  if (def.provider.providerRef) {
+    // resolved from Settings at run time
+  } else if (def.provider.providerApiKey) {
     // enc:v1: tokens and ${ENV} refs are resolved at run time; literal keys are sealed on save.
   } else if (def.provider.credentialEnv) {
     if (!process.env[def.provider.credentialEnv]) {
