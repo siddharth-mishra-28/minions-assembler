@@ -11,6 +11,15 @@ import { registerRunRoutes } from './http/routes-runs.js';
 import { registerMcpRoutes } from './http/routes-mcp.js';
 import { registerChatRoutes } from './http/routes-chat.js';
 import { registerUiRoutes } from './http/routes-ui.js';
+import { registerPlatformRoutes } from './http/routes-platform.js';
+import { registerSecurity } from './http/security.js';
+import { PlatformStore } from './store/platform.js';
+import { ChatHub } from './execution/chat-hub.js';
+import { ApprovalBroker } from './execution/approvals.js';
+import { ChatEngine } from './execution/chat-engine.js';
+import { RetentionService } from './execution/retention.js';
+import type { McpServerConfig } from './mcp/mcp.js';
+import { dirname, join, resolve } from 'node:path';
 
 export type { DbAdapter } from './store/adapter.js';
 
@@ -69,6 +78,7 @@ export async function buildServer(dbPath = './data/minion.db') {
     return reply.code(status).send({ error: e.message });
   });
 
+  registerSecurity(app);
   await app.register(swagger, {
     openapi: {
       info: {
@@ -94,8 +104,30 @@ export async function buildServer(dbPath = './data/minion.db') {
   await registerAgentRoutes(app, { db });
   await registerRunRoutes(app, { db, runQueue });
   await registerMcpRoutes(app, { db });
-  await registerChatRoutes(app, { db, runQueue, workspaceRoot: workspace.root });
+  const mcpRegistry = (): { registry: Map<string, McpServerConfig>; tools: Map<string, string[]> } => {
+    const registry = new Map<string, McpServerConfig>();
+    const tools = new Map<string, string[]>();
+    for (const row of db.listMcpServers()) {
+      try {
+        registry.set(row.name, JSON.parse((db.getMcpServer(row.name) as { config_json: string }).config_json) as McpServerConfig);
+        const tj = row.tools_json ? JSON.parse(row.tools_json) as { name: string }[] : [];
+        tools.set(row.name, tj.map((t) => t.name));
+      } catch { /* skip malformed rows */ }
+    }
+    return { registry, tools };
+  };
+  const platform = new PlatformStore(db);
+  const hub = new ChatHub();
+  const broker = new ApprovalBroker(platform, hub);
+  const auditRoot = resolve(join(dirname(resolve(dbPath)), 'audit'));
+  const retention = new RetentionService(platform, { auditRoot, workspaceRoot: workspace.root });
+  const engine = new ChatEngine({ db, platform, hub, broker, workspaceRoot: workspace.root, auditRoot, mcpRegistry });
+  await registerPlatformRoutes(app, { platform, broker, retention });
+  await registerChatRoutes(app, { db, platform, engine, hub, broker });
   await registerUiRoutes(app, { db });
 
-  return { app, db };
+  retention.start();
+  app.addHook('onClose', async () => { retention.stop(); });
+
+  return { app, db, platform, hub, broker, engine, retention };
 }

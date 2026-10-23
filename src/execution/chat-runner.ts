@@ -32,8 +32,8 @@ export interface ChatTurnOptions {
   workingDirectory: string;
   /** The thread is attached to a project folder: operate there, never in the agent's own workspace. */
   projectBound?: boolean;
-  /** Where this turn's audit log lives. Defaults to <runRoot>/.audit (legacy). Keep it OUTSIDE project folders. */
-  auditDir?: string;
+  /** Root for audit logs (<auditRoot>/<runId>). Keep it OUTSIDE project folders; omit for the legacy <ws>/run_<id>/.audit. */
+  auditRoot?: string;
   threadId?: string;
   projectId?: string;
   /** How 'ask' tool decisions are answered. Omit for the legacy deferred-deny. */
@@ -85,9 +85,9 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
   mkdirSync(workspaceRoot, { recursive: true });
   const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.content, 'chat', { source: 'chat', threadId: opts.threadId, projectId: opts.projectId });
   // Audit lives outside project folders when an auditDir is supplied; legacy threads keep `<ws>/run_<id>/.audit`.
-  const auditDir = opts.auditDir ?? `${joinRunRoot(workspaceRoot, runId)}/.audit`;
+  const auditDir = opts.auditRoot ? resolve(opts.auditRoot, runId) : `${joinRunRoot(workspaceRoot, runId)}/.audit`;
   mkdirSync(auditDir, { recursive: true });
-  try { opts.db.setRunAuditPath(runId, opts.auditDir ?? auditDir); } catch { /* best-effort */ }
+  try { opts.db.setRunAuditPath(runId, auditDir); } catch { /* best-effort */ }
   const sessionCwd = workspaceRoot;
   const audit = new AuditLog(auditDir);
   constRankPersist(audit, opts.db, runId, {

@@ -1,55 +1,46 @@
-import type { FastifyInstance } from 'fastify';
-import type { ServerResponse } from 'node:http';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { mkdirSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { executeChatTurn, type ActivityUpdate } from '../execution/chat-runner.js';
 import type { DbAdapter } from '../store/adapter.js';
-import type { McpServerConfig } from '../mcp/mcp.js';
+import type { PlatformStore } from '../store/platform.js';
+import type { ChatHub, HubEnvelope } from '../execution/chat-hub.js';
+import type { ApprovalBroker } from '../execution/approvals.js';
+import { ChatEngine, ChatEngineError } from '../execution/chat-engine.js';
+import { DEFAULT_AGENT_ID, PROJECT_AGENT_PREFIX, discoverProjectAgents } from '../agents/default-agent.js';
 import { errorSchema } from './route-schemas.js';
 
+type ThreadRow = Record<string, unknown>;
+
+const parseMessages = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
+  rows.map((m) => {
+    let meta: unknown = null;
+    try { meta = m.meta_json ? JSON.parse(m.meta_json as string) : null; } catch { /* corrupt meta is ignored */ }
+    const { meta_json: _drop, ...rest } = m;
+    return { ...rest, meta };
+  });
+
 /**
- * Chat route group: persistent multi-turn conversations with registered agents
- * (ChatGPT-style: thread + transcript + streaming assistant replies). A thread is
- * either 1:1 with one registered agent, or a general thread where each message
- * @mentions the registered agent that should answer.
+ * Chat route group. A thread belongs to an optional project folder and a selected agent:
+ * the built-in Copilot agent (default), a registered custom agent, or a `.github/agents`
+ * profile found inside the project. Sending a message returns 202 immediately; the turn is
+ * streamed over SSE (`GET /api/chat/threads/:id/events`) and can be stopped.
  */
-export async function registerChatRoutes(app: FastifyInstance, ctx: { db: DbAdapter; runQueue: import('../core/run-queue.js').RunQueue; workspaceRoot: string }): Promise<void> {
-  const { db, runQueue, workspaceRoot } = ctx;
+export async function registerChatRoutes(
+  app: FastifyInstance,
+  ctx: { db: DbAdapter; platform: PlatformStore; engine: ChatEngine; hub: ChatHub; broker: ApprovalBroker },
+): Promise<void> {
+  const { db, platform, engine, hub, broker } = ctx;
 
-  const mcpRegistryFromDb = (): { registry: Map<string, McpServerConfig>; tools: Map<string, string[]> } => {
-    const registry = new Map<string, McpServerConfig>();
-    const tools = new Map<string, string[]>();
-    for (const row of db.listMcpServers()) {
-      try {
-        registry.set(row.name, JSON.parse((db.getMcpServer(row.name) as { config_json: string }).config_json) as McpServerConfig);
-        const tj = row.tools_json ? JSON.parse(row.tools_json) as { name: string }[] : [];
-        tools.set(row.name, tj.map((t) => t.name));
-      } catch { /* skip malformed rows */ }
-    }
-    return { registry, tools };
+  const threadView = (t: ThreadRow) => ({ ...t, busy: engine.isBusy(t.id as string) });
+
+  const agentLabel = (id: string | null): string => {
+    if (!id || id === DEFAULT_AGENT_ID) return 'GitHub Copilot';
+    if (id.startsWith(PROJECT_AGENT_PREFIX)) return id.split(':').slice(2).join(':').replace(/\.(agent\.)?md$/i, '');
+    return id;
   };
 
-  const threadSchema = {
-    type: 'object',
-    properties: {
-      id: { type: 'string', example: 'chat_a1b2c3d4' },
-      title: { type: 'string', example: 'Chat with fullstack-engineer@1.0.0' },
-      agent_id: { type: ['string', 'null'] },
-      session_id: { type: ['string', 'null'] },
-      created_at: { type: 'string' },
-      updated_at: { type: 'string' },
-      // messages intentionally NOT in the response schema: transcripts are free-form
-      // rows (mtid/role/author/content/run_id/created_at) and Fastify serialization
-      // strips undeclared props (same free-form policy as GET /api/runs).
-    },
-    additionalProperties: true, // allow `messages` transcript rows through
-  };
-
-  const threadDir = (threadId: string): string =>
-    resolve(join(workspaceRoot, '.chats', threadId));
-
-  /** Extract @mention targets: `@my-agent do X` → matches registered agents by name prefix. */
-  const resolveMentions = (content: string, participants: string[]): string[] => {
+  /** Extract @mention targets (general threads only): `@my-agent do X` -> registered agent id. */
+  const resolveMentions = (content: string): string[] => {
+    const participants = db.listAgents().map((a) => a.id);
     const found = new Set<string>();
     for (const m of content.matchAll(/@([a-zA-Z0-9_-]+)/g)) {
       const q = m[1].toLowerCase();
@@ -59,190 +50,251 @@ export async function registerChatRoutes(app: FastifyInstance, ctx: { db: DbAdap
     return [...found];
   };
 
+  const sendError = (reply: FastifyReply, e: unknown) => {
+    if (e instanceof ChatEngineError) return reply.code(e.status).send({ error: e.message });
+    throw e;
+  };
+
+  app.get('/api/chat/agents', {
+    schema: {
+      tags: ['chat'],
+      summary: 'Agents selectable in the chat picker',
+      description: 'The built-in Copilot agent, every published custom agent, and (when `projectId` is given) the agent profiles found in that project\'s .github/agents folder.',
+      querystring: { type: 'object', properties: { projectId: { type: 'string' } } },
+    },
+  }, async (req) => {
+    const q = req.query as { projectId?: string };
+    const provider = platform.getDefaultProvider();
+    const agents: { id: string; name: string; kind: 'default' | 'custom' | 'project'; description?: string; model?: string }[] = [{
+      id: DEFAULT_AGENT_ID, name: 'GitHub Copilot', kind: 'default',
+      description: 'Default agent. Works in your project and asks before changing anything.',
+      model: platform.getSettings().defaults.model ?? provider?.defaultModel ?? undefined,
+    }];
+    for (const a of db.listAgents()) {
+      let description: string | undefined; let model: string | undefined;
+      try {
+        const def = JSON.parse((db.getAgent(a.id) as { definition_json: string }).definition_json) as { metadata?: { description?: string }; provider?: { model?: string } };
+        description = def.metadata?.description; model = def.provider?.model;
+      } catch { /* listing must not fail on one bad row */ }
+      agents.push({ id: a.id, name: a.id.split('@')[0], kind: 'custom', description, model });
+    }
+    const project = q.projectId ? platform.getProject(q.projectId) : undefined;
+    if (project) for (const p of discoverProjectAgents(project)) agents.push({ id: p.id, name: p.name, kind: 'project', description: p.description, model: p.model });
+    return { agents };
+  });
+
   app.post('/api/chat/threads', {
     schema: {
       tags: ['chat'],
-      summary: 'Open a chat thread with an agent',
-      description:
-        'Body: { agentId } → 1:1 thread with that registered agent. Empty body → general chat with no fixed agent (agent selectable per message via @mention).',
+      summary: 'Create a chat thread',
+      description: 'All fields optional. No `agentId` = the built-in Copilot agent. `projectId` binds the chat to a project folder.',
       body: {
         type: 'object',
         properties: {
-          agentId: { type: 'string', description: 'Registered agent id (name@version) for a 1:1 thread' },
-          title: { type: 'string', description: 'Optional thread title' },
+          agentId: { type: 'string', description: 'copilot-default@builtin, a registered `name@version`, or `project:<projectId>:<file>`' },
+          projectId: { type: 'string' },
+          model: { type: 'string', description: 'Per-chat model override' },
+          title: { type: 'string' },
         },
       },
-      response: { 200: threadSchema, 404: errorSchema },
+      response: { 404: errorSchema },
     },
   }, async (req, reply) => {
-    const body = (req.body ?? {}) as { agentId?: string; title?: string };
+    const body = (req.body ?? {}) as { agentId?: string; projectId?: string; model?: string; title?: string };
+    const project = body.projectId ? platform.getProject(body.projectId) : undefined;
+    if (body.projectId && !project) return reply.code(404).send({ error: `project not found: ${body.projectId}` });
     let agentId: string | null = null;
-    let title = body.title?.trim() || '';
-    if (body.agentId) {
-      const agent = db.getAgent(body.agentId);
-      if (!agent) return reply.code(404).send({ error: `agent not found: ${body.agentId}` });
+    if (body.agentId && body.agentId !== DEFAULT_AGENT_ID) {
+      if (!body.agentId.startsWith(PROJECT_AGENT_PREFIX) && !db.getAgent(body.agentId)) return reply.code(404).send({ error: `agent not found: ${body.agentId}` });
       agentId = body.agentId;
-      title = title || `Chat with ${body.agentId}`;
-    } else {
-      title = title || 'New chat';
     }
-    const id = db.createChatThread({ title, agentId, sessionId: null });
-    const thread = db.getChatThread(id);
-    mkdirSync(threadDir(id), { recursive: true });
-    return { ...thread, messages: [] };
+    const title = body.title?.trim() || (agentId && !agentId.startsWith(PROJECT_AGENT_PREFIX) ? `Chat with ${agentId}` : 'New chat');
+    const id = db.createChatThread({ title, agentId, sessionId: null, projectId: body.projectId ?? null, modelOverride: body.model ?? null });
+    mkdirSync(engine.threadDir(id), { recursive: true });
+    if (project) platform.openProject(project.path);
+    return { ...threadView(db.getChatThread(id)!), messages: [] };
   });
 
   app.get('/api/chat/threads', {
     schema: {
       tags: ['chat'],
-      summary: 'List chat threads (newest first)',
-      description: 'No response schema: thread rows are free-form, newest first. Filter by `?agentId=`.',
-      querystring: { type: 'object', properties: { agentId: { type: 'string' } } },
+      summary: 'List chat threads (pinned first, then most recent)',
+      querystring: { type: 'object', properties: { agentId: { type: 'string' }, projectId: { type: 'string' }, q: { type: 'string' }, archived: { type: 'boolean' } } },
     },
   }, async (req) => {
-    const q = req.query as { agentId?: string };
-    return { threads: db.listChatThreads({ agentId: q.agentId }) };
+    const q = req.query as { agentId?: string; projectId?: string; q?: string; archived?: boolean };
+    return { threads: db.listChatThreads({ agentId: q.agentId, projectId: q.projectId, q: q.q, includeArchived: q.archived }).map(threadView) };
   });
 
-  const getThreadOr404 = (id: string) => db.getChatThread(id);
-
   app.get('/api/chat/threads/:id', {
+    schema: { tags: ['chat'], summary: 'One thread with its transcript and pending approvals', response: { 404: errorSchema } },
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const t = db.getChatThread(id);
+    if (!t) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    const live = new Set(broker.pendingFor(id));
+    return { ...threadView(t), messages: parseMessages(db.getChatMessages(id)), pendingApprovals: platform.listApprovals({ threadId: id, status: 'pending' }).filter((a) => live.has(a.id)) };
+  });
+
+  app.patch('/api/chat/threads/:id', {
     schema: {
       tags: ['chat'],
-      summary: 'Fetch one chat thread with its full transcript',
-      description: 'No response schema: thread + free-form message rows (mtid, role, author, content, run_id, created_at).',
-      response: { 404: errorSchema },
+      summary: 'Rename, pin, archive, or change agent/model/approval mode of a thread',
+      description: 'Changing the agent, project or model starts a fresh model session (the visible transcript is kept and a divider message is added).',
+      body: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 120 }, pinned: { type: 'boolean' }, archived: { type: 'boolean' },
+          agentId: { type: ['string', 'null'] }, projectId: { type: ['string', 'null'] }, model: { type: ['string', 'null'] },
+          approvalMode: { type: ['string', 'null'], enum: ['interactive', 'autopilot', 'strict', null] },
+        },
+        additionalProperties: false,
+      },
+      response: { 404: errorSchema, 409: errorSchema },
     },
   }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const t = getThreadOr404(id);
+    const t = db.getChatThread(id);
     if (!t) return reply.code(404).send({ error: `chat thread not found: ${id}` });
-    return { ...t, messages: db.getChatMessages(id) };
+    const b = req.body as { title?: string; pinned?: boolean; archived?: boolean; agentId?: string | null; projectId?: string | null; model?: string | null; approvalMode?: string | null };
+    const nextAgent = b.agentId === undefined ? undefined : (b.agentId && b.agentId !== DEFAULT_AGENT_ID ? b.agentId : null);
+    const switchesAgent = nextAgent !== undefined && nextAgent !== ((t.agent_id as string | null) ?? null);
+    const switchesProject = b.projectId !== undefined && (b.projectId || null) !== ((t.project_id as string | null) ?? null);
+    const resets = switchesAgent || switchesProject || b.model !== undefined;
+    if (resets && engine.isBusy(id)) return reply.code(409).send({ error: 'Stop the running turn before changing agent, project or model.' });
+    const project = b.projectId ? platform.getProject(b.projectId) : undefined;
+    if (b.projectId && !project) return reply.code(404).send({ error: `project not found: ${b.projectId}` });
+    if (switchesAgent && nextAgent && !nextAgent.startsWith(PROJECT_AGENT_PREFIX) && !db.getAgent(nextAgent)) return reply.code(404).send({ error: `agent not found: ${nextAgent}` });
+    db.updateChatThread(id, {
+      title: b.title, pinned: b.pinned, archived: b.archived,
+      agentId: switchesAgent ? nextAgent : undefined,
+      projectId: b.projectId, modelOverride: b.model, approvalMode: b.approvalMode,
+      ...(resets ? { sessionId: null } : {}),
+    });
+    if (switchesAgent) db.addChatMessage(id, { role: 'system', author: 'system', content: `Switched agent to ${agentLabel(nextAgent ?? null)}`, meta: { kind: 'agent-switch', agentId: nextAgent ?? DEFAULT_AGENT_ID } });
+    if (switchesProject) db.addChatMessage(id, { role: 'system', author: 'system', content: project ? `Project changed to ${project.name}` : 'Project detached', meta: { kind: 'project-switch', projectId: b.projectId ?? null } });
+    return { ...threadView(db.getChatThread(id)!), messages: parseMessages(db.getChatMessages(id)) };
   });
 
   app.delete('/api/chat/threads/:id', {
-    schema: {
-      tags: ['chat'],
-      summary: 'Delete a chat thread and its transcript',
-      response: { 200: { type: 'object', properties: { deleted: { type: 'boolean' } } }, 404: errorSchema },
-    },
+    schema: { tags: ['chat'], summary: 'Delete a thread and its transcript', response: { 404: errorSchema } },
   }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!getThreadOr404(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    if (!db.getChatThread(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    engine.cancel(id);
+    hub.clear(id);
     return { deleted: db.deleteChatThread(id) };
   });
 
   app.post('/api/chat/threads/:id/messages', {
     schema: {
       tags: ['chat'],
-      summary: 'Send a message — runs an agent turn and streams the reply',
-      description:
-        '1:1 threads: the stored agent replies (multi-turn session; history is preserved). General threads: `@agentname <text>` routes the message to that registered agent. The reply streams via SSE on /api/chat/threads/:id/stream.',
-      body: { type: 'object', required: ['content'], properties: { content: { type: 'string', description: 'The user message. In general chats @mention a registered agent to pick the responder.' } } },
-      response: { 200: { type: 'object', properties: { userMessageId: { type: 'integer' }, replyMessageId: { type: 'integer' }, runId: { type: 'string' }, agentId: { type: 'string' }, text: { type: 'string' }, reasoning: { type: 'string' }, tools: { type: 'array', items: { type: 'object', properties: { callId: { type: 'string' }, name: { type: 'string' }, success: { type: 'boolean' } } } } } }, 400: errorSchema, 404: errorSchema },
+      summary: 'Send a message',
+      description: 'Returns 202 immediately; follow the turn on `GET /api/chat/threads/:id/events`. Add `?wait=true` to block until the reply is complete and receive it in the response (API clients). In a general thread (no fixed agent) an `@agentname` mention routes the message to that registered agent; otherwise the Copilot agent answers.',
+      querystring: { type: 'object', properties: { wait: { type: 'boolean' } } },
+      body: { type: 'object', required: ['content'], properties: { content: { type: 'string', maxLength: 200000 } } },
+      response: {
+        202: { type: 'object', properties: { userMessageId: { type: 'integer' }, agentId: { type: 'string' }, model: { type: 'string' }, status: { type: 'string' } } },
+        400: errorSchema, 404: errorSchema, 409: errorSchema, 412: errorSchema,
+      },
     },
   }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { content?: string };
-    const content = body.content?.trim();
+    const q = req.query as { wait?: boolean };
+    const content = ((req.body ?? {}) as { content?: string }).content?.trim();
     if (!content) return reply.code(400).send({ error: 'content is required' });
-    const t = getThreadOr404(id);
+    const t = db.getChatThread(id);
     if (!t) return reply.code(404).send({ error: `chat thread not found: ${id}` });
-    const fixedAgentId = (t.agent_id as string | null) ?? null;
+    const mention = !t.agent_id ? resolveMentions(content)[0] : undefined;
 
-    let agentId = fixedAgentId as string | null;
-    const userMessageId = db.addChatMessage(id, { role: 'user', author: 'user', content });
-
-    // General threads route by @mention across every registered agent.
-    let mentionsNote = '';
-    if (!agentId) {
-      const participants = db.listAgents().map((a) => a.id);
-      const mentions = resolveMentions(content, participants);
-      if (!mentions.length) {
-        return reply.code(400).send({ error: 'thread has no fixed agent — create it with { agentId } or @mention a registered agent (e.g. @expense-tracker-dev fix the totals)', userMessageId });
-      }
-      agentId = mentions[0];
-      if (mentions.length > 1) mentionsNote = `\n\n———\nMentioned agents routing this turn: ${mentions.map((m) => `@${m.split('@')[0]}`).join(', ')}`;
-    }
-
-    /** Live activity fan-out: current Thinking text + tool log, mirrored to any open SSE subscriber. */
-    let liveAgent = agentId as string;
-    let reasoningBuf = '';
-    const toolBuf = new Map<string, { name: string; args?: unknown; result?: string; success?: boolean }>();
-    const onActivity = (u: ActivityUpdate): void => {
-      if (u.type === 'reasoning') reasoningBuf += u.delta;
-      else if (u.type === 'tool-start') toolBuf.set(u.callId, { name: u.name, args: u.args });
-      else if (u.type === 'tool-complete') toolBuf.set(u.callId, { ...(toolBuf.get(u.callId) ?? { name: u.name }), result: u.result, success: u.success });
-      broadcast(id, { event: u.type, ...u as object, reasoning: u.type === 'reasoning' ? reasoningBuf : undefined });
-    };
-
-    // 1:1 agent thread
-    const defRow = db.getAgent(agentId as string);
-    if (!defRow) return reply.code(404).send({ error: `agent not found: ${agentId}` });
-    const def = JSON.parse(defRow.definition_json as string);
-    const { registry, tools } = mcpRegistryFromDb();
-    let replyText = '';
-    let runIdOut = '';
-    const queued = await runQueue.run(async () => {
-      const turn = await executeChatTurn({
-        definition: def, agentId: agentId as string, db,
-        sessionId: (t.session_id as string | null) ?? undefined,
-        sessionIdPrefix: 'chat',
-        content,
-        workingDirectory: threadDir(id),
-        mcpRegistry: registry, mcpRegistryTools: tools,
-        onDelta: (d) => { replyText += d; },
-        onActivity,
+    let waiter: Promise<Record<string, unknown>> | undefined;
+    if (q.wait) {
+      waiter = new Promise((resolve, reject) => {
+        const off = hub.subscribe(id, (env: HubEnvelope) => {
+          const e = env.event;
+          if (e.type === 'done') { off(); resolve({ runId: e.runId, replyMessageId: e.messageId, text: e.text }); }
+          else if (e.type === 'error') { off(); reject(new ChatEngineError(e.message, 502)); }
+          else if (e.type === 'cancelled') { off(); reject(new ChatEngineError('turn cancelled', 409)); }
+        }, Number.MAX_SAFE_INTEGER);
       });
-      runIdOut = turn.runId;
-      return turn;
-    });
-    if (!replyText && queued.text) replyText = queued.text;
-    db.updateChatThread(id, { sessionId: queued.sessionId });
-    const replyMessageId = db.addChatMessage(id, { role: 'assistant', author: agentId as string, content: replyText, runId: runIdOut });
-    broadcast(id, { event: 'reply', runId: runIdOut, agentId, replyMessageId });
-    return { userMessageId, replyMessageId, runId: runIdOut, agentId, text: replyText, reasoning: queued.reasoning, tools: queued.tools };
+      waiter.catch(() => { /* surfaced below */ });
+    }
+    let started: ReturnType<ChatEngine['start']>;
+    try { started = engine.start(id, content, { agentId: mention }); } catch (e) { return sendError(reply, e); }
+    if (!waiter) return reply.code(202).send({ userMessageId: started.userMessageId, agentId: started.agentId, model: started.model, status: 'running' });
+    try {
+      const r = await waiter;
+      return { userMessageId: started.userMessageId, agentId: started.agentId, ...r };
+    } catch (e) { return sendError(reply, e); }
   });
 
-  app.get('/api/chat/threads/:id/stream', {
+  app.post('/api/chat/threads/:id/cancel', {
+    schema: { tags: ['chat'], summary: 'Stop the running turn (pending approvals are denied)', response: { 404: errorSchema } },
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!db.getChatThread(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    return { cancelled: engine.cancel(id) };
+  });
+
+  app.get('/api/chat/threads/:id/events', {
     schema: {
       tags: ['chat'],
-      summary: 'SSE transcript stream — replays the thread then stays open for live turn events',
-      description: 'text/event-stream: first `event: message` lines replay stored messages, then the connection stays open. While a turn runs in this thread the route fans out live `reasoning`/`tool-start`/`tool-complete` activity events so the UI can render a real-time Thinking section; `reply` marks the finished turn (the transcript should be refetched).',
+      summary: 'Typed SSE stream for one thread',
+      description: 'Events: turn-start, delta, reasoning, tool-start, tool-complete, approval-request, approval-resolved, usage, done, error, cancelled. Supports `Last-Event-ID` for reconnects. A `ready` event carries `{ busy, pending }` once any replay is flushed.',
       response: { 404: errorSchema },
     },
   }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!getThreadOr404(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
-    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    for (const m of db.getChatMessages(id)) {
-      reply.raw.write(`event: message\ndata: ${JSON.stringify(m)}\n\n`);
+    if (!db.getChatThread(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    const last = Number(req.headers['last-event-id'] ?? 0) || 0;
+    reply.hijack();
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    const write = (env: HubEnvelope): void => { try { reply.raw.write(`id: ${env.id}\nevent: ${env.event.type}\ndata: ${JSON.stringify(env.event)}\n\n`); } catch { /* socket closed */ } };
+    // Replay the in-flight turn so a late/reconnecting client can rebuild it; an idle thread is already fully persisted.
+    const busy = engine.isBusy(id);
+    const off = hub.subscribe(id, write, busy || last ? last : Number.MAX_SAFE_INTEGER);
+    reply.raw.write(`event: ready\ndata: ${JSON.stringify({ busy, pending: broker.pendingFor(id) })}\n\n`);
+    const ping = setInterval(() => { try { reply.raw.write(': ping\n\n'); } catch { /* closed */ } }, 20_000);
+    req.raw.on('close', () => { clearInterval(ping); off(); });
+  });
+
+  app.get('/api/chat/threads/:id/export', {
+    schema: { tags: ['chat'], summary: 'Export a transcript as Markdown or JSON', querystring: { type: 'object', properties: { format: { type: 'string', enum: ['md', 'json'] } } }, response: { 404: errorSchema } },
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const t = db.getChatThread(id);
+    if (!t) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    const messages = parseMessages(db.getChatMessages(id));
+    const fmt = (req.query as { format?: string }).format ?? 'md';
+    const safe = String(t.title ?? id).replace(/[^a-z0-9-_ ]/gi, '').trim().slice(0, 60) || id;
+    if (fmt === 'json') {
+      reply.header('Content-Disposition', `attachment; filename="${safe}.json"`);
+      return { thread: t, messages, approvals: platform.listApprovals({ threadId: id, limit: 1000 }) };
     }
-    // Keep the stream open: turns broadcast their live activity into this subscriber set.
+    const md = [`# ${String(t.title ?? id)}`, '', `Agent: ${agentLabel((t.agent_id as string | null) ?? null)}`, '',
+      ...messages.map((m) => `## ${m.role === 'user' ? 'You' : String(m.author)}  \n_${String(m.created_at)}_\n\n${String(m.content)}\n`)].join('\n');
+    reply.header('Content-Type', 'text/markdown; charset=utf-8').header('Content-Disposition', `attachment; filename="${safe}.md"`);
+    return md;
+  });
+
+  // Legacy (v1 UI) SSE shape: replay + `activity` events. Kept until the old UI is removed.
+  app.get('/api/chat/threads/:id/stream', {
+    schema: { tags: ['chat'], summary: 'Deprecated: legacy SSE (use /events)', deprecated: true, response: { 404: errorSchema } },
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!db.getChatThread(id)) return reply.code(404).send({ error: `chat thread not found: ${id}` });
+    reply.hijack();
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    for (const m of parseMessages(db.getChatMessages(id))) reply.raw.write(`event: message\ndata: ${JSON.stringify(m)}\n\n`);
     reply.raw.write('event: ready\ndata: {}\n\n');
-    addSubscriber(id, reply.raw);
-    req.raw.on('close', () => removeSubscriber(id, reply.raw));
+    let reasoning = '';
+    const emit = (payload: Record<string, unknown>): void => { try { reply.raw.write(`event: activity\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* closed */ } };
+    const off = hub.subscribe(id, (env) => {
+      const e = env.event;
+      if (e.type === 'reasoning') { reasoning += e.delta; emit({ event: 'reasoning', delta: e.delta, reasoning }); }
+      else if (e.type === 'tool-start' || e.type === 'tool-complete') emit({ event: e.type, ...e });
+      else if (e.type === 'done') { reasoning = ''; emit({ event: 'reply', runId: e.runId, replyMessageId: e.messageId }); }
+    }, Number.MAX_SAFE_INTEGER);
+    req.raw.on('close', off);
   });
 }
-
-// ---------- live turn fan-out (module-level registry; keys are thread ids, values are response sockets) ----------
-const streamSubscribers = new Map<string, Set<ServerResponse>>();
-
-function addSubscriber(threadId: string, s: ServerResponse): void {
-  let set = streamSubscribers.get(threadId);
-  if (!set) { set = new Set(); streamSubscribers.set(threadId, set); }
-  set.add(s);
-}
-function removeSubscriber(threadId: string, s: ServerResponse): void {
-  const set = streamSubscribers.get(threadId);
-  if (!set) return;
-  set.delete(s);
-  if (!set.size) streamSubscribers.delete(threadId);
-}
-function broadcast(threadId: string, payload: Record<string, unknown>): void {
-  const set = streamSubscribers.get(threadId);
-  if (!set?.size) return;
-  const line = `event: activity\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const s of set) { try { s.write(line); } catch { removeSubscriber(threadId, s); } }
-}
-

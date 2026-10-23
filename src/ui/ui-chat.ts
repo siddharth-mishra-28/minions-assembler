@@ -298,7 +298,7 @@ export function chatPage(db: DbAdapter, opts?: { threadId?: string }): string {
       tr.appendChild(row); tr.scrollTop=tr.scrollHeight;
       newLivePane(''); var whoEl=livePane.row.querySelector('.who'); whoEl.innerHTML='<span class="mut">working…</span>';
       try{
-        var j=await api('/api/chat/threads/'+encodeURIComponent(activeId)+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:text}),timeoutMs:${15 * 60 * 1000}});
+        var j=await api('/api/chat/threads/'+encodeURIComponent(activeId)+'/messages?wait=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:text}),timeoutMs:${15 * 60 * 1000}});
         // direct 1:1 turn: finalize with persisted reasoning + tool sections
         var pid=livePane.agentId||(j.agentId||'agent');
         livePane.agentId=pid; styleLivePane();
