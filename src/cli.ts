@@ -34,13 +34,16 @@ program.command('run')
   .option('--output-format <fmt>', 'text|json', 'text')
   .option('--share <path>', 'Write Markdown transcript after completion')
   .option('--db <path>', 'SQLite path', './data/minion.db')
-  .option('--yes', 'Explicit CI approval for approve-all-ci-only policies')
+  .option('--yes', 'Explicit CI approval for approve-all-ci-only policies (alias of --approval autopilot)')
+  .option('--approval <mode>', 'Headless approval mode: autopilot (auto-approve every ask) | strict (deny every ask)')
   .option('--audit-level <level>', 'Audit verbosity: minimal|default|full (falls back to AUDIT_LEVEL env, then default)')
   .action(async (opts) => {
     const started = Date.now();
     try {
       const { definition, warnings, definitionHash } = loadAgentDefinition(opts.agentDefinition);
       for (const w of warnings) console.warn(`warning: ${w}`);
+      if (opts.approval && !['autopilot', 'strict'].includes(opts.approval)) throw new Error("--approval must be autopilot or strict (got '${opts.approval}')");
+      const approval = (opts.approval as 'autopilot' | 'strict' | undefined) ?? (opts.yes ? 'autopilot' : undefined);
       const db = new SqliteAdapter(opts.db);
       const agentId = db.saveAgent(definition.metadata.name, definition.metadata.version, JSON.stringify(definition), definitionHash);
       // Wire the MCP registry so mcp.use refs resolve in CLI runs too
@@ -64,6 +67,7 @@ program.command('run')
         definition, agentId, definitionHash, db,
         taskOverride: opts.task,
         ciApproveAll: Boolean(opts.yes),
+        approvalMode: approval,
         auditLevel: (opts.auditLevel as 'minimal' | 'default' | 'full' | undefined) || undefined,
         resumeSessionId: opts.sessionId,
         streamOut: opts.stream === false ? undefined : (t) => { streamed += t; process.stdout.write(t); },

@@ -54,6 +54,7 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
         properties: {
           taskOverride: { type: 'string', description: 'Overrides task.prompt from the definition', example: 'Reply with exactly: SERVE-API-OK' },
           auditLevel: { type: 'string', enum: ['minimal', 'default', 'full'], description: 'Audit verbosity for this run (default from AUDIT_LEVEL env)', default: 'default' },
+          approvalMode: { type: 'string', enum: ['autopilot', 'strict'], description: 'autopilot auto-approves every ask decision (destructive gate still applies); strict denies them. Default: ask decisions are denied.' },
           turnTimeoutMs: { type: 'integer', minimum: 1000, maximum: 21600000, description: 'Per-turn budget in ms (overrides definition runtime.turnTimeoutMs / RUN_TURN_TIMEOUT_MS; default 2700000 = 45 min)' },
         },
       },
@@ -64,12 +65,12 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     const agent = db.getAgent(id);
     if (!agent) return reply.code(404).send({ error: `agent not found: ${id}` });
     const definition = JSON.parse(agent.definition_json as string);
-    const { taskOverride, auditLevel, turnTimeoutMs } = (req.body ?? {}) as { taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number };
+    const { taskOverride, auditLevel, turnTimeoutMs, approvalMode } = (req.body ?? {}) as { taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict' };
     mkdirSync('./runs', { recursive: true });
     try {
       const { registry, tools } = mcpRegistryFromDb();
       // Serialize: chain each run onto the previous one so concurrent POSTs queue cleanly.
-      const queued = runQueue.run(() => executeRun({ definition, agentId: id, definitionHash: 'serve', db, taskOverride, auditLevel, turnTimeoutMs, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
+      const queued = runQueue.run(() => executeRun({ definition, agentId: id, definitionHash: 'serve', db, taskOverride, auditLevel, turnTimeoutMs, approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
       return await queued;
     } catch (e) {
       return reply.code(500).send({ error: (e as Error).message });
@@ -94,13 +95,14 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
           definition: { type: 'object', description: 'Full AgentDefinition v1.0 object' },
           taskOverride: { type: 'string', description: 'Overrides task.prompt from the definition', example: 'Reply with exactly: INLINE-DEF-OK' },
           auditLevel: { type: 'string', enum: ['minimal', 'default', 'full'], default: 'default' },
+          approvalMode: { type: 'string', enum: ['autopilot', 'strict'], description: 'autopilot auto-approves every ask decision (destructive gate still applies); strict denies them.' },
           turnTimeoutMs: { type: 'integer', minimum: 1000, maximum: 21600000, description: 'Per-turn budget in ms (default 2700000 = 45 min)' },
         },
       },
       response: { 200: runResultSchema, 400: { ...errorSchema, description: 'Invalid definition' }, 500: { ...errorSchema, description: 'Run failed' } },
     },
   }, async (req, reply) => {
-    const body = (req.body ?? {}) as { definition?: unknown; taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number };
+    const body = (req.body ?? {}) as { definition?: unknown; taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict' };
     if (!body.definition) return reply.code(400).send({ error: 'Body must include a definition object' });
     let definition: import('../core/types.js').AgentDefinition;
     let definitionHash: string;
@@ -116,7 +118,7 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     mkdirSync('./runs', { recursive: true });
     try {
       const { registry, tools } = mcpRegistryFromDb();
-      const queued = runQueue.run(() => executeRun({ definition, agentId, definitionHash, db, taskOverride: body.taskOverride, auditLevel: body.auditLevel, turnTimeoutMs: body.turnTimeoutMs, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
+      const queued = runQueue.run(() => executeRun({ definition, agentId, definitionHash, db, taskOverride: body.taskOverride, auditLevel: body.auditLevel, turnTimeoutMs: body.turnTimeoutMs, approvalMode: body.approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
       return await queued;
     } catch (e) {
       return reply.code(500).send({ error: (e as Error).message });

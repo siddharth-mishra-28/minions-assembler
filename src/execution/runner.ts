@@ -47,6 +47,8 @@ export interface RunOptions {
   runDir?: string;
   taskOverride?: string;
   ciApproveAll?: boolean;
+  /** Headless approval: 'autopilot' auto-approves every ask (and counts as explicit CI approval); 'strict' denies asks. Default keeps the legacy deferred-deny. */
+  approvalMode?: 'autopilot' | 'strict';
   streamOut?: (text: string) => void;
   resumeSessionId?: string;
   /** Audit verbosity for this run; falls back to AUDIT_LEVEL env, then 'default'. */
@@ -199,7 +201,8 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
       throw new Error('Definition uses mcp.use but no MCP registry was provided to the runner');
     }
     (sessionOpts as Record<string, unknown>).sessionId = sessionId;
-    const { onPermissionRequest, onPreToolUse } = compilePermissionHandlers(def, { ciApproveAll: opts.ciApproveAll ?? false, harnessTools: harnessEnabled(def) }, {
+    const { onPermissionRequest, onPreToolUse } = compilePermissionHandlers(def, { ciApproveAll: (opts.ciApproveAll ?? false) || opts.approvalMode === 'autopilot', harnessTools: harnessEnabled(def), approvalMode: opts.approvalMode }, {
+      onAskResolved: (info) => persist('permission.ask_resolved', info, true, AUDIT_RANK.default),
       onAskDeferred: (info) => persist('permission.ask_denied', { ...info, reason: "'ask' decisions are not interactively approved in headless runs — tool call denied" }, true, AUDIT_RANK.default),
       onDestructiveDeny: (info) => persist('permission.destructive_denied', info, true, AUDIT_RANK.default),
     });
@@ -307,6 +310,7 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     session.on('session.idle', () => persist('session.idle', {}, false));
 
     const sendArgs = toSendArgs(def, opts.taskOverride);
+    if (!sendArgs.prompt.trim() && !def.fleet?.enabled) throw new Error('No task to run: the definition has an empty task.prompt and no task override was supplied');
     // Configurable turn budget: API body > definition.runtime.turnTimeoutMs > RUN_TURN_TIMEOUT_MS > 45 min.
     // Multi-file coding builds routinely need far more than the old hard-coded 10 minutes.
     const turnTimeoutMs = resolveTurnTimeoutMs(def, opts.turnTimeoutMs);
