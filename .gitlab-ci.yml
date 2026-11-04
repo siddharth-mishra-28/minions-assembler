@@ -99,7 +99,8 @@ app_check:
 
 cockpit_check:
   stage: cockpit
-  needs: [package]
+  # No `needs`: this shell runner reuses one build directory per project, so a job that
+  # starts early via needs can wipe the checkout another job is still writing.
   retry: 1
   before_script:
     - source ci/bootstrap.sh
