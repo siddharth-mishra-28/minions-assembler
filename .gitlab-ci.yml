@@ -47,9 +47,7 @@ package:
 .generate:
   stage: generate
   needs: [package]
-  retry:
-    max: 1
-    when: [runner_system_failure, stuck_or_timeout]
+  retry: 1
   before_script:
     - source ci/bootstrap.sh
     - npm install -g ./minions-assembler-1.0.0.tgz
@@ -85,9 +83,7 @@ generate_frontend:
 app_check:
   stage: verify
   needs: [package, generate_backend, generate_frontend]
-  retry:
-    max: 1
-    when: [runner_system_failure, stuck_or_timeout]
+  retry: 1
   before_script:
     - source ci/bootstrap.sh
     - npm ci --no-audit --no-fund
@@ -104,9 +100,7 @@ app_check:
 cockpit_check:
   stage: cockpit
   needs: [package]
-  retry:
-    max: 1
-    when: [runner_system_failure, stuck_or_timeout]
+  retry: 1
   before_script:
     - source ci/bootstrap.sh
     - npm ci --no-audit --no-fund
