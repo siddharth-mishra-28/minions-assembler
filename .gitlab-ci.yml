@@ -11,7 +11,9 @@ default:
     key: "$CI_COMMIT_REF_SLUG"
     paths:
       - .npm/
+      - .npm-global/
       - .m2/repository/
+      - tools/
 
 variables:
   npm_config_cache: "$CI_PROJECT_DIR/.npm"
@@ -45,9 +47,11 @@ package:
 .generate:
   stage: generate
   needs: [package]
+  retry:
+    max: 1
+    when: [runner_system_failure, stuck_or_timeout]
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends maven openjdk-17-jdk-headless
+    - source ci/bootstrap.sh
     - npm install -g ./minions-assembler-1.0.0.tgz
     - minions-assembler --version
     - minions-assembler validate --agentDefinition examples/full-stack-engineer.agent.json
@@ -81,11 +85,13 @@ generate_frontend:
 app_check:
   stage: verify
   needs: [package, generate_backend, generate_frontend]
+  retry:
+    max: 1
+    when: [runner_system_failure, stuck_or_timeout]
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq --no-install-recommends maven openjdk-17-jdk-headless
+    - source ci/bootstrap.sh
     - npm ci --no-audit --no-fund
-    - npx -y playwright@1.64.1 install --with-deps chromium
+    - npx -y playwright@1.64.1 install chromium
   script:
     - node ci/verify-app.mjs --app app --api-port 8101 --web-port 3301 --out reports/app --mode gitlab
   artifacts:
@@ -98,9 +104,13 @@ app_check:
 cockpit_check:
   stage: cockpit
   needs: [package]
+  retry:
+    max: 1
+    when: [runner_system_failure, stuck_or_timeout]
   before_script:
+    - source ci/bootstrap.sh
     - npm ci --no-audit --no-fund
-    - npx -y playwright@1.64.1 install --with-deps chromium
+    - npx -y playwright@1.64.1 install chromium
     - npm install -g ./minions-assembler-1.0.0.tgz
     - mkdir -p data reports/cockpit/screenshots workspace
   script:
