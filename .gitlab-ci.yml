@@ -27,6 +27,7 @@ package:
   stage: package
   script:
     - npm ci --no-audit --no-fund
+    - npm --prefix web ci --no-audit --no-fund
     - npm run typecheck
     - npm run typecheck:web
     - npm test
