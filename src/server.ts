@@ -10,7 +10,7 @@ import { registerAgentRoutes } from './http/routes-agents.js';
 import { registerRunRoutes } from './http/routes-runs.js';
 import { registerMcpRoutes } from './http/routes-mcp.js';
 import { registerChatRoutes } from './http/routes-chat.js';
-import { registerUiRoutes } from './http/routes-ui.js';
+import { registerMemoryRoutes } from './http/routes-memory.js';
 import { registerWebApp } from './http/web-static.js';
 import { registerPlatformRoutes } from './http/routes-platform.js';
 import { registerSecurity } from './http/security.js';
@@ -21,6 +21,7 @@ import { ChatEngine } from './execution/chat-engine.js';
 import { RetentionService } from './execution/retention.js';
 import type { McpServerConfig } from './mcp/mcp.js';
 import { dirname, join, resolve } from 'node:path';
+import { openMemoryStore } from './memory/sqlite-store.js';
 
 export type { DbAdapter } from './store/adapter.js';
 
@@ -32,9 +33,7 @@ export type { DbAdapter } from './store/adapter.js';
  *   routes-system.ts    — health, audit logs, OpenAPI doc, provider probes, credentials, metrics
  *   routes-agents.ts    — agent definitions: CRUD, drafts, export, Elaborate, wizard helpers
  *   routes-runs.ts      — agent execution (stored id + inline) and run/session audit reads
- *   routes-mcp.ts       — MCP registry, live probes (+ LLM diagnose/auto-fix), browser OAuth
- *   routes-chat.ts      — persistent chat threads with registered agents (multi-turn)
- *   routes-ui.ts        — server-rendered HTML screens
+ *   routes-mcp.ts       — MCP registry, live probes (+ LLM diagnose/auto-fix), browser OAuth *   routes-chat.ts       — persistent chat threads with registered agents (multi-turn)
  *
  * Shared state has one owner: the SQLite adapter lives in `db`, all SDK run
  * serialization goes through the RunQueue, per-flow state (pending OAuth) is owned by
@@ -42,6 +41,9 @@ export type { DbAdapter } from './store/adapter.js';
  */
 export async function buildServer(dbPath = './data/minion.db') {
   const db = new SqliteAdapter(dbPath);
+  // Long-term memory lives in the SAME database file (own connection, WAL) so the
+  // knowledge graph is queryable next to runs/agents and survives restarts.
+  const memoryStore = openMemoryStore(dbPath);
   // One SDK session executes at a time (each run spawns a Go child); every run
   // route chains through the RunQueue in submission order.
   const runQueue = new RunQueue();
@@ -96,14 +98,23 @@ export async function buildServer(dbPath = './data/minion.db') {
         { name: 'agents', description: 'Agent definitions: validate, register, list, inspect' },
         { name: 'runs', description: 'Execute agents and inspect run status, audit events, streams' },
         { name: 'mcp', description: 'MCP server registry: register, list, probe tools, delete' },
+        { name: 'memory', description: 'Long-term memory: code graph, learned lessons, platform config, curation' },
       ],
     },
   });
   await app.register(swaggerUi, { routePrefix: '/docs' });
 
+  // The memory store is a second connection to the same file; closing the app
+  // must release it or tests/listeners keep the handle alive. The main adapter
+  // must be closed too: leaking it left better-sqlite3 statements to be finalized
+  // after a Vitest worker environment was destroyed, which aborts the process
+  // (`RemoveEnvironmentCleanupHook: Assertion failed: (env) != nullptr`).
+  app.addHook('onClose', async () => {
+    try { memoryStore.close(); } catch { /* already closed */ }
+    try { db.close(); } catch { /* already closed */ }
+  });
+
   await registerSystemRoutes(app, { db, dbPath, workspace, serverLog, app });
-  await registerRunRoutes(app, { db, runQueue });
-  await registerMcpRoutes(app, { db });
   const mcpRegistry = (): { registry: Map<string, McpServerConfig>; tools: Map<string, string[]> } => {
     const registry = new Map<string, McpServerConfig>();
     const tools = new Map<string, string[]>();
@@ -118,18 +129,20 @@ export async function buildServer(dbPath = './data/minion.db') {
   };
   const platform = new PlatformStore(db);
   await registerAgentRoutes(app, { db, platform });
+  await registerRunRoutes(app, { db, runQueue, memoryStore });
+  await registerMcpRoutes(app, { db });
   const hub = new ChatHub();
   const broker = new ApprovalBroker(platform, hub);
   const auditRoot = resolve(join(dirname(resolve(dbPath)), 'audit'));
   const retention = new RetentionService(platform, { auditRoot, workspaceRoot: workspace.root });
-  const engine = new ChatEngine({ db, platform, hub, broker, workspaceRoot: workspace.root, auditRoot, mcpRegistry });
+  const engine = new ChatEngine({ db, platform, hub, broker, workspaceRoot: workspace.root, auditRoot, mcpRegistry, memoryStore });
   await registerPlatformRoutes(app, { platform, broker, retention });
   await registerChatRoutes(app, { db, platform, engine, hub, broker });
-  await registerUiRoutes(app, { db });
+  await registerMemoryRoutes(app, { store: memoryStore });
   await registerWebApp(app);
 
   retention.start();
   app.addHook('onClose', async () => { retention.stop(); });
 
-  return { app, db, platform, hub, broker, engine, retention };
+  return { app, db, platform, hub, broker, engine, retention, memoryStore };
 }

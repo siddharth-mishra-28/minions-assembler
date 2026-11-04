@@ -14,8 +14,16 @@ describe('sealMcpSecrets', () => {
     expect(JSON.stringify(sealed)).not.toContain('plain-secret');
     expect(JSON.stringify(sealed)).not.toContain('abc123');
     expect(sealMcpSecrets(sealed)).toEqual(sealed);
-    const resolved = resolveMcpProbeAuth(sealed);
-    expect(resolved.env!.API_KEY).toBe('plain-secret');
-    expect(resolved.headers!.Authorization).toContain('abc123');
+    const previous = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = 'gh-secret';
+    try {
+      const resolved = resolveMcpProbeAuth(sealed);
+      expect(resolved.env!.API_KEY).toBe('plain-secret');
+      expect(resolved.env!.TOKEN).toBe('gh-secret');
+      expect(resolved.headers!.Authorization).toContain('abc123');
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
+    }
   });
 });

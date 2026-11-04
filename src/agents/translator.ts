@@ -4,6 +4,7 @@ import type { AgentDefinition } from '../core/types.js';
 import { toSdkMcpConfig, type McpServerConfig } from '../mcp/mcp.js';
 import { resolveProviderApiKeyValue } from '../core/crypto.js';
 import { withHarnessToolsAvailable, withHarnessToolsForAgent, harnessEnabled } from './harness-tools.js';
+import { mergeSystemMessageWithMemory } from '../memory/context.js';
 import { resolveBuiltinTools } from './tools-policy.js';
 
 export interface PersonaResolution {
@@ -27,26 +28,41 @@ export interface PersonaResolution {
  *   acknowledgeReplaceRisks; the wizard's unchecked default-prompt checkbox
  *   writes this shape).
  */
-export function resolvePersona(def: AgentDefinition): PersonaResolution {
+export function resolvePersona(def: AgentDefinition, memoryContext?: string): PersonaResolution {
   const useDefault = def.persona?.useCopilotDefaultPrompt !== false;
+  const memoryChars = (memoryContext ?? '').trim().length;
+  const memoryNote = memoryChars ? ` + memory ${memoryChars} chars` : '';
   const sm = def.persona?.systemMessage;
   if (!sm) {
-    let summary = 'systemMessage omitted — default Copilot CLI system prompt only';
-    if (!useDefault) summary += ' (warning: useCopilotDefaultPrompt=false but no custom systemMessage provided)';
-    return { systemMessage: undefined, defaultPromptIncluded: useDefault, summary };
+    const merged = mergeSystemMessageWithMemory(undefined, memoryContext);
+    if (!merged) {
+      let summary = 'systemMessage omitted — default Copilot CLI system prompt only';
+      if (!useDefault) summary += ' (warning: useCopilotDefaultPrompt=false but no custom systemMessage provided)';
+      return { systemMessage: undefined, defaultPromptIncluded: useDefault, summary };
+    }
+    return {
+      systemMessage: merged,
+      defaultPromptIncluded: useDefault,
+      summary: `systemMessage memory-only (append)${memoryNote} — default prompt ${useDefault ? 'included' : 'REPLACED per definition'}`,
+    };
   }
   const mode = sm.mode ?? 'append';
   // replace drops the default prompt (and its guardrails) — acknowledge or not active.
   const defaultPromptIncluded = mode !== 'replace';
+  const merged = mergeSystemMessageWithMemory(sm as unknown as Record<string, unknown>, memoryContext);
   return {
-    systemMessage: sm as unknown as Record<string, unknown>,
+    systemMessage: merged,
     defaultPromptIncluded,
-    summary: `systemMessage mode=${mode} content=${(sm.content ?? '').length} chars — default prompt ${defaultPromptIncluded ? 'included' : 'REPLACED'}`,
+    summary: `systemMessage mode=${mode} content=${(sm.content ?? '').length} chars${memoryNote} — default prompt ${defaultPromptIncluded ? 'included' : 'REPLACED'}`,
   };
 }
 
 /** Build Copilot SDK createSession options from a validated definition. Pure function — easy to unit test. */
-export function toSessionOptions(def: AgentDefinition, apiKey: string, extra?: { tools?: unknown[] }): Record<string, unknown> {
+export function toSessionOptions(
+  def: AgentDefinition,
+  apiKey: string,
+  extra?: { tools?: unknown[]; memoryContext?: string },
+): Record<string, unknown> {
   const provider: Record<string, unknown> = {
     type: def.provider.type,
     baseUrl: def.provider.baseUrl,
@@ -68,7 +84,11 @@ export function toSessionOptions(def: AgentDefinition, apiKey: string, extra?: {
       description: t.description,
       parameters: t.parametersSchema,
       skipPermission: t.skipPermission,
-      defer: 'never',
+      defer: t.defer ?? 'never',
+      ...(t.overridesBuiltInTool != null ? { overridesBuiltInTool: t.overridesBuiltInTool } : {}),
+      ...(t.isTerminal != null ? { isTerminal: t.isTerminal } : {}),
+      ...(t.namespace != null ? { namespace: t.namespace } : {}),
+      ...(t.metadata != null ? { metadata: t.metadata } : {}),
     });
   }
 
@@ -79,7 +99,7 @@ export function toSessionOptions(def: AgentDefinition, apiKey: string, extra?: {
     model: def.provider.model,
     provider,
     streaming: def.runtime?.streaming ?? true,
-    systemMessage: resolvePersona(def).systemMessage,
+    systemMessage: resolvePersona(def, extra?.memoryContext).systemMessage,
     customAgents: (def.agents ?? []).map((a) => ({
       name: a.name,
       prompt: a.prompt,
@@ -130,9 +150,14 @@ export function toSessionOptions(def: AgentDefinition, apiKey: string, extra?: {
   if (def.runtime?.idleTimeoutSecs) opts.sessionIdleTimeoutSeconds = def.runtime.idleTimeoutSecs;
   // Coding builds need a long-lived session: default the SDK idle timeout to 30 min
   // so a slow tool chain does not idle-out mid-scaffold.
-  else opts.sessionIdleTimeoutSeconds = 30 * 60;
-  if (def.runtime?.maxAiCredits != null) opts.sessionLimits = { maxAiCredits: def.runtime.maxAiCredits };
-  if (def.runtime?.autopilot != null) opts.autopilot = def.runtime.autopilot;
+  else opts.sessionIdleTimeoutSeconds = 30 * 60;    if (def.runtime?.maxAiCredits != null) opts.sessionLimits = { maxAiCredits: def.runtime.maxAiCredits };
+    if (def.runtime?.autopilot != null) opts.autopilot = def.runtime.autopilot;
+    if (def.runtime?.reasoningEffort) opts.reasoningEffort = def.runtime.reasoningEffort;
+    if (def.runtime?.capi) opts.capi = def.runtime.capi;
+    if (def.runtime?.trustWorkingDirectory) opts.trustWorkingDirectory = def.runtime.trustWorkingDirectory;
+    if (def.instructions?.directories?.length) opts.instructionDirectories = def.instructions.directories;
+    // SDK `defaultAgent.excludedTools`: hide tools from the default/main agent only.
+    if (def.tools?.defaultAgentExcluded?.length) opts.defaultAgent = { excludedTools: def.tools.defaultAgentExcluded };
   if (def.knowledge?.sessionStore != null) opts.enableSessionStore = def.knowledge.sessionStore;
   if (def.runtime?.clientInfo) opts.clientInfo = def.runtime.clientInfo;
   if (def.runtime?.logLevel) opts.logLevel = def.runtime.logLevel;
@@ -142,6 +167,21 @@ export function toSessionOptions(def: AgentDefinition, apiKey: string, extra?: {
 }
 
 export { harnessEnabled };
+
+/**
+ * Model listing the host serves to the SDK (`onListModels`): the model in the
+ * definition plus its advertised capabilities. Driven by `runtime.modelCapabilities`
+ * so definitions control what the runtime believes the model supports.
+ */
+export function modelListing(def: AgentDefinition): Record<string, unknown> {
+  const caps = def.runtime?.modelCapabilities ?? {};
+  return {
+    id: def.provider.model,
+    name: def.provider.model,
+    capabilities: { supports: { vision: caps.vision ?? false, reasoningEffort: caps.reasoningEffort ?? false } },
+    limits: { max_context_window_tokens: caps.maxContextWindowTokens ?? 128000 },
+  };
+}
 
 export function toSendArgs(def: AgentDefinition, taskOverride?: string): { prompt: string; mode: string; attachments?: unknown[] } {
   const instructionContext = [

@@ -2,7 +2,7 @@ import type { RunStatus } from '../core/types.js';
 
 export interface DbAdapter {
   saveAgent(name: string, version: string, definitionJson: string, hash: string, status?: string): string;
-  getAgent(id: string): { id: string; name: string; version: string; definition_json: string; definition_hash?: string; status?: string } | undefined;
+  getAgent(id: string): { id: string; name: string; version: string; definition_json: string; definition_hash?: string | null; status?: string } | undefined;
   listAgents(status?: string): { id: string; name: string; version: string; created_at: string; status?: string }[];
   /** Replace an agent's definition in place (id stays `name@version`). Returns false if unknown. */
   updateAgentDefinition(id: string, definitionJson: string, hash: string): boolean;
@@ -10,13 +10,20 @@ export interface DbAdapter {
   deleteAgent(id: string): boolean;
   /** Counts used by delete-safety checks. */
   agentActivity(agentId: string): { activeRuns: number; activeSessions: number; totalRuns: number; totalSessions: number };
-  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string }): string;
+  /**
+   * Extra run metadata: `definitionJson` is the sealed, portable definition snapshot
+   * (env refs intact) that the run executes; `source` distinguishes chat runs from
+   * headless/CLI runs and keeps chat threads linked to their runs.
+   */
+  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string; definitionJson?: string | null }): string;
   setRunAuditPath(runId: string, path: string): void;
   appendEvent(runId: string, seq: number, type: string, payloadJson: string, persisted: boolean): void;
   finishRun(runId: string, status: RunStatus, error?: string): void;
   recordUsage(runId: string, usage: { tokensIn?: number; tokensOut?: number; credits?: number; durationMs?: number; endpoint?: string; requestId?: string }): void;
   getRun(runId: string): Record<string, unknown> | undefined;
   listRuns(agentId?: string): Record<string, unknown>[];
+  /** The definition snapshot recorded at run start, or undefined for pre-snapshot runs. */
+  getRunDefinition(runId: string): string | undefined;
   getEvents(runId: string, afterSeq?: number): { seq: number; type: string; payload_json: string; persisted: number; at: string }[];
   /** Hourly run/request buckets for dashboard charts (last N hours, oldest first). */
   runsTimeline(hours?: number): { hour: string; requests: number; succeeded: number; failed: number; running: number }[];

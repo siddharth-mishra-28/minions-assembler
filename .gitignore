@@ -15,3 +15,10 @@ workflow_*/
 
 # agent working directories (runtime output from coding runs)
 workspace-*/
+
+# acceptance evidence, backups and smoke output
+evidence/
+backup/
+.smoke/
+*.log
+*.tgz

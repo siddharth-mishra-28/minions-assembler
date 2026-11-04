@@ -7,6 +7,45 @@ import type { RunStatus } from '../core/types.js';
 import { encryptSecret, decryptSecret } from '../core/crypto.js';
 import { runMigrations } from './migrations.js';
 
+/**
+ * Bootstrap DDL. Additive only: `ensureColumn` evolves old databases forward,
+ * and NOTHING is ever dropped here (the removed workflow feature's DROP
+ * migrations were deleted — legacy tables in old dev DBs are inert and can be
+ * cleared by deleting the db file).
+ */
+/** Run-row projection: excludes the (large, sensitive) definition_json snapshot. */
+const RUN_COLUMNS = 'id,agent_id,session_id,trace_id,status,model,provider_type,task_prompt,definition_hash,created_at,finished_at,error,source,thread_id,project_id,audit_path';
+
+/** Cap for one persisted audit event (events.payload_json). */
+export const EVENT_PAYLOAD_LIMIT = 20000;
+
+/**
+ * Keep `events.payload_json` valid JSON no matter how large the tool output is.
+ * The previous byte-wise slice cut strings mid-token, so JSON.parse (run timeline,
+ * SSE replay) and SQLite's json_extract both failed on big tool results. Oversized
+ * payloads are stored as a self-describing envelope with a bounded preview; the
+ * full event remains in the on-disk events.jsonl transcript.
+ */
+export function clampEventPayload(payloadJson: string): string {
+  if (payloadJson.length <= EVENT_PAYLOAD_LIMIT) return payloadJson;
+  return JSON.stringify({
+    truncated: true,
+    bytes: payloadJson.length,
+    preview: payloadJson.slice(0, EVENT_PAYLOAD_LIMIT - 200),
+  });
+}
+
+export const SCHEMA_SQL = `
+      CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY, name TEXT, version TEXT, definition_json TEXT, definition_hash TEXT, created_at TEXT, status TEXT DEFAULT 'published');
+      CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, agent_id TEXT, session_id TEXT, trace_id TEXT UNIQUE, status TEXT, model TEXT, provider_type TEXT, task_prompt TEXT, definition_hash TEXT, definition_json TEXT, created_at TEXT, finished_at TEXT, error TEXT);
+      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, type TEXT, payload_json TEXT, persisted INTEGER, at TEXT);
+      CREATE TABLE IF NOT EXISTS usage(run_id TEXT PRIMARY KEY, tokens_in INTEGER, tokens_out INTEGER, credits REAL, duration_ms INTEGER, endpoint TEXT, request_id TEXT);      CREATE TABLE IF NOT EXISTS transcripts(run_id TEXT PRIMARY KEY, path TEXT, sha256 TEXT);
+      CREATE TABLE IF NOT EXISTS mcp_servers(name TEXT PRIMARY KEY, config_json TEXT, description TEXT, tools_json TEXT, created_at TEXT);
+      CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, trace_id TEXT, status TEXT, summary TEXT, created_at TEXT, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS credentials(name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, created_at TEXT, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS chat_threads(id TEXT PRIMARY KEY, title TEXT, agent_id TEXT, session_id TEXT, created_at TEXT, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS chat_messages(mtid INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT, role TEXT, author TEXT, content TEXT, run_id TEXT, created_at TEXT);`;
+
 export class SqliteAdapter implements DbAdapter {
   private db: Database.Database;
   constructor(path = './data/minion.db') {
@@ -18,31 +57,19 @@ export class SqliteAdapter implements DbAdapter {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY, name TEXT, version TEXT, definition_json TEXT, definition_hash TEXT, created_at TEXT, status TEXT DEFAULT 'published');
-      CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, agent_id TEXT, session_id TEXT, trace_id TEXT UNIQUE, status TEXT, model TEXT, provider_type TEXT, task_prompt TEXT, definition_hash TEXT, created_at TEXT, finished_at TEXT, error TEXT);
-      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, seq INTEGER, type TEXT, payload_json TEXT, persisted INTEGER, at TEXT);
-      CREATE TABLE IF NOT EXISTS usage(run_id TEXT PRIMARY KEY, tokens_in INTEGER, tokens_out INTEGER, credits REAL, duration_ms INTEGER, endpoint TEXT, request_id TEXT);      CREATE TABLE IF NOT EXISTS transcripts(run_id TEXT PRIMARY KEY, path TEXT, sha256 TEXT);
-      CREATE TABLE IF NOT EXISTS mcp_servers(name TEXT PRIMARY KEY, config_json TEXT, description TEXT, tools_json TEXT, created_at TEXT);
-      CREATE TABLE IF NOT EXISTS sessions(session_id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, trace_id TEXT, status TEXT, summary TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE IF NOT EXISTS credentials(name TEXT PRIMARY KEY, ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, created_at TEXT, updated_at TEXT);
-      CREATE TABLE IF NOT EXISTS chat_threads(id TEXT PRIMARY KEY, title TEXT, agent_id TEXT, session_id TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE IF NOT EXISTS chat_messages(mtid INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT, role TEXT, author TEXT, content TEXT, run_id TEXT, created_at TEXT);`);
-    // Migration: workflows were removed — drop their tables/column from older DBs.
-    this.db.exec(`
-      DROP TABLE IF EXISTS workflow_steps;
-      DROP TABLE IF EXISTS workflow_events;
-      DROP TABLE IF EXISTS workflow_runs;
-      DROP TABLE IF EXISTS workflows;
-    `);
-    const chatCols = this.db.prepare(`PRAGMA table_info(chat_threads)`).all() as { name: string }[];
-    if (chatCols.some((c) => c.name === 'workflow_id')) {
-      this.db.exec(`ALTER TABLE chat_threads DROP COLUMN workflow_id`);
-    }
-    try {
-      this.db.exec("ALTER TABLE agents ADD COLUMN status TEXT DEFAULT 'published'");
-    } catch { /* column already exists */ }
+    this.db.exec(SCHEMA_SQL);
+    // Additive schema evolution for DBs created before these columns existed.
+    // Never drops anything — see SCHEMA_SQL docs.
+    this.ensureColumn('agents', 'status', "TEXT DEFAULT 'published'");
+    this.ensureColumn('runs', 'definition_json', 'TEXT');
     runMigrations(this.db);
+  }
+  /** Additive-only migration: add a column when an older DB lacks it. Idempotent. */
+  private ensureColumn(table: string, column: string, ddl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
   }
   /** Raw handle for sibling stores (PlatformStore) that share this connection. */
   get raw(): Database.Database { return this.db; }
@@ -52,7 +79,7 @@ export class SqliteAdapter implements DbAdapter {
     return id;
   }
   getAgent(id: string) {
-    return this.db.prepare(`SELECT id,name,version,definition_json,definition_hash,created_at,COALESCE(status, 'published') as status FROM agents WHERE id=?`).get(id) as { id: string; name: string; version: string; definition_json: string; status?: string } | undefined;
+    return this.db.prepare(`SELECT id,name,version,definition_json,definition_hash,created_at,COALESCE(status, 'published') as status FROM agents WHERE id=?`).get(id) as { id: string; name: string; version: string; definition_json: string; definition_hash?: string | null; status?: string } | undefined;
   }
   listAgents(status = 'published') {
     if (status === 'all') {
@@ -78,13 +105,13 @@ export class SqliteAdapter implements DbAdapter {
       totalSessions: sessions.total ?? 0,
     };
   }
-  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string }): string {
+  createRun(agentId: string, sessionId: string, traceId: string, model: string, providerType: string, taskPrompt: string, definitionHash: string, extra?: { source?: string; threadId?: string; projectId?: string; definitionJson?: string | null }): string {
     const id = `run_${randomUUID().slice(0, 8)}`;
-    this.db.prepare(`INSERT INTO runs(id,agent_id,session_id,trace_id,status,model,provider_type,task_prompt,definition_hash,created_at,source,thread_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, agentId, sessionId, traceId, 'running', model, providerType, taskPrompt.slice(0, 4000), definitionHash, new Date().toISOString(), extra?.source ?? 'run', extra?.threadId ?? null, extra?.projectId ?? null);
+    this.db.prepare(`INSERT INTO runs(id,agent_id,session_id,trace_id,status,model,provider_type,task_prompt,definition_hash,definition_json,created_at,source,thread_id,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, agentId, sessionId, traceId, 'running', model, providerType, taskPrompt.slice(0, 4000), definitionHash, extra?.definitionJson ?? null, new Date().toISOString(), extra?.source ?? 'run', extra?.threadId ?? null, extra?.projectId ?? null);
     return id;
   }
   appendEvent(runId: string, seq: number, type: string, payloadJson: string, persisted: boolean) {
-    this.db.prepare(`INSERT INTO events(run_id,seq,type,payload_json,persisted,at) VALUES(?,?,?,?,?,?)`).run(runId, seq, type, payloadJson.slice(0, 20000), persisted ? 1 : 0, new Date().toISOString());
+    this.db.prepare(`INSERT INTO events(run_id,seq,type,payload_json,persisted,at) VALUES(?,?,?,?,?,?)`).run(runId, seq, type, clampEventPayload(payloadJson), persisted ? 1 : 0, new Date().toISOString());
   }
   finishRun(runId: string, status: RunStatus, error?: string) {
     this.db.prepare(`UPDATE runs SET status=?, finished_at=?, error=? WHERE id=?`).run(status, new Date().toISOString(), error ?? null, runId);
@@ -93,12 +120,17 @@ export class SqliteAdapter implements DbAdapter {
     this.db.prepare(`INSERT INTO usage(run_id,tokens_in,tokens_out,credits,duration_ms,endpoint,request_id) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET tokens_in=excluded.tokens_in, tokens_out=excluded.tokens_out, credits=excluded.credits`).run(runId, u.tokensIn ?? null, u.tokensOut ?? null, u.credits ?? null, u.durationMs ?? null, u.endpoint ?? null, u.requestId ?? null);
   }
   getRun(runId: string) {
-    return this.db.prepare(`SELECT * FROM runs WHERE id=?`).get(runId) as Record<string, unknown> | undefined;
+    return this.db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE id=?`).get(runId) as Record<string, unknown> | undefined;
   }
   listRuns(agentId?: string) {
     return (agentId
-      ? this.db.prepare(`SELECT * FROM runs WHERE agent_id=? ORDER BY created_at DESC LIMIT 100`).all(agentId)
-      : this.db.prepare(`SELECT * FROM runs ORDER BY created_at DESC LIMIT 100`).all()) as Record<string, unknown>[];
+      ? this.db.prepare(`SELECT ${RUN_COLUMNS} FROM runs WHERE agent_id=? ORDER BY created_at DESC LIMIT 100`).all(agentId)
+      : this.db.prepare(`SELECT ${RUN_COLUMNS} FROM runs ORDER BY created_at DESC LIMIT 100`).all()) as Record<string, unknown>[];
+  }
+  /** The sealed definition snapshot recorded at run start (what actually executed). Not part of run rows. */
+  getRunDefinition(runId: string): string | undefined {
+    const row = this.db.prepare(`SELECT definition_json FROM runs WHERE id=?`).get(runId) as { definition_json: string | null } | undefined;
+    return row?.definition_json ?? undefined;
   }
   getEvents(runId: string, afterSeq = 0) {
     return this.db.prepare(`SELECT seq,type,payload_json,persisted,at FROM events WHERE run_id=? AND seq>? ORDER BY seq`).all(runId, afterSeq) as { seq: number; type: string; payload_json: string; persisted: number; at: string }[];

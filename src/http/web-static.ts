@@ -18,7 +18,7 @@ const NON_SPA = /^\/(api|docs|openapi\.json|ui|assets)(\/|$|\.)/;
 export async function registerWebApp(app: FastifyInstance): Promise<void> {
   const root = findWebRoot();
   if (!root) {
-    app.get('/', async (_req, reply) => reply.type('text/html').send('<!doctype html><title>Minions</title><body style="font-family:system-ui;padding:3rem"><h2>Web app not built</h2><p>Run <code>npm run build:web</code> and restart, or open the legacy UI at <a href="/ui/dashboard">/ui/dashboard</a>.</p>'));
+    app.get('/', async (_req, reply) => reply.type('text/html').send('<!doctype html><title>Minions</title><body style="font-family:system-ui;padding:3rem"><h2>Web app not built</h2><p>Run <code>npm run build</code> and restart the server.</p>'));
     return;
   }
   await app.register(fastifyStatic, { root, wildcard: false, index: ['index.html'], cacheControl: true, maxAge: '1h', setHeaders: (res, p) => { if (p.endsWith('index.html')) res.header('Cache-Control', 'no-cache'); } });

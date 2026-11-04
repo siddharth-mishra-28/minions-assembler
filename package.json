@@ -1,7 +1,8 @@
 {
   "name": "minions-assembler",
   "version": "1.0.0",
-  "description": "Minions Assembler — Assemble custom GitHub Copilot agents from versioned JSON — CLI (CI) + serve (API/Swagger/UI) + SQLite audit",
+  "description": "Minions Assembler — assemble and run custom GitHub Copilot agents from versioned JSON. One npm artifact: React cockpit + REST API + CLI + GitLab CI, with SQLite audit and long-term memory.",
+  "author": "Minions Assembler contributors",
   "type": "module",
   "bin": {
     "minions-assembler": "./dist/cli.js"
@@ -15,12 +16,14 @@
     "serve": "node dist/cli.js serve",
     "dev:serve": "tsx src/cli.ts serve",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "typecheck:web": "npm --prefix web run typecheck",
+    "test": "vitest run",
+    "test:web": "npm --prefix web test",
+    "prepack": "npm run build"
   },
   "files": [
     "dist",
-    "scripts",
-    "examples"
+    "examples/full-stack-engineer.agent.json"
   ],
   "dependencies": {
     "@fastify/static": "^10.1.7",
@@ -28,7 +31,7 @@
     "@fastify/swagger-ui": "^5.2.0",
     "@github/copilot-sdk": "^1.0.19",
     "ajv": "^8.17.1",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.0.3",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.12.5"
@@ -36,8 +39,25 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.7.0",
+    "playwright-core": "^1.64.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "keywords": [
+    "agents",
+    "copilot",
+    "ai",
+    "cli",
+    "agent-platform",
+    "sqlite",
+    "code-graph"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

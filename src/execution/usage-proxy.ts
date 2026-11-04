@@ -1,5 +1,5 @@
-import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
-import { request as httpsRequest } from 'node:https';
+import { Agent as HttpAgent, createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 
 /**
  * Wire-level token-usage capture.
@@ -40,6 +40,12 @@ const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 export async function createUsageProxy(opts: { upstream: string; onUsage: (u: UsageCapture) => void }): Promise<UsageProxy> {
   const upstream = opts.upstream.replace(/\/+$/, '');
+  // Dedicated, non-keep-alive agents: Node's global agent keeps idle upstream
+  // sockets in a free pool, which keeps the CLI event loop alive after the run
+  // finishes (a headless `run` would then hang until killed, breaking CI exit
+  // codes). These agents are destroyed on close().
+  const httpAgent = new HttpAgent({ keepAlive: false });
+  const httpsAgent = new HttpsAgent({ keepAlive: false });
   const server = createServer((req, res) => { void handle(req, res); });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -91,8 +97,9 @@ export async function createUsageProxy(opts: { upstream: string; onUsage: (u: Us
         } catch { /* non-JSON body — forward untouched */ }
       }
 
-      const send = url.startsWith('https:') ? httpsRequest : httpRequest;
-      const upstreamReq = send(url, { method: req.method, headers }, (upRes) => {
+      const isTls = url.startsWith('https:');
+      const send = isTls ? httpsRequest : httpRequest;
+      const upstreamReq = send(url, { method: req.method, headers, agent: isTls ? httpsAgent : httpAgent }, (upRes) => {
         const contentType = String(upRes.headers['content-type'] ?? '');
         const isSse = contentType.includes('text/event-stream');
         const capture: { usage?: Record<string, unknown>; model?: string; requestId?: string } = {};
@@ -160,7 +167,14 @@ export async function createUsageProxy(opts: { upstream: string; onUsage: (u: Us
   return {
     url: `http://127.0.0.1:${port}`,
     port,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => new Promise((resolve) => {
+      // Stop accepting, drop idle/half-open client sockets, and destroy the
+      // upstream agent pools so nothing is left holding the process open.
+      server.close(() => resolve());
+      server.closeAllConnections?.();
+      httpAgent.destroy();
+      httpsAgent.destroy();
+    }),
   };
 }
 

@@ -1,5 +1,5 @@
 import { CopilotClient } from '@github/copilot-sdk';
-import { toSessionOptions, toSendArgs, resolveApiKey, resolvePersona } from '../agents/translator.js';
+import { toSessionOptions, toSendArgs, resolveApiKey, resolvePersona, modelListing } from '../agents/translator.js';
 import { resolveBuiltinTools } from '../agents/tools-policy.js';
 import { expandMcpRefs } from '../mcp/mcp.js';
 import { createUsageProxy, type UsageProxy } from './usage-proxy.js';
@@ -14,6 +14,9 @@ import type { SqliteAdapter } from '../store/sqlite.js';
 import { mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { buildHarnessTools, autoMkdirPreTool, resolveTurnTimeoutMs, harnessEnabled, DEFAULT_TURN_TIMEOUT_MS } from '../agents/harness-tools.js';
+import { buildMemoryTools } from '../memory/tools.js';
+import { deriveRecallQuery } from '../memory/context.js';
+import type { MemoryRuntime } from '../memory/runtime.js';
 import type { AgentDefinition } from '../core/types.js';
 import type { DbAdapter } from '../store/adapter.js';
 
@@ -45,6 +48,8 @@ export interface RunOptions {
   definition: AgentDefinition;
   agentId: string;
   definitionHash: string;
+  /** Sealed, portable definition JSON snapshotted onto the run row (rehydrates the exact config later). */
+  definitionSnapshot?: string;
   db: DbAdapter;
   /** Explicit override for the run-transcript directory (rare; workspace is auto-resolved otherwise). */
   runDir?: string;
@@ -65,6 +70,12 @@ export interface RunOptions {
    * and the `RUN_TURN_TIMEOUT_MS` env. Defaults to 45 minutes for multi-file builds.
    */
   turnTimeoutMs?: number;
+  /**
+   * Long-term memory runtime (agent dataset + platform dataset). When present the
+   * run recalls relevant lessons/facts/code before starting and captures an
+   * episode when it ends — the feedback loop that makes agents improve over time.
+   */
+  memory?: MemoryRuntime;
 }
 
 /**
@@ -98,7 +109,10 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
   const traceId = newTraceId();
   const workspace = resolveWorkspace(def.knowledge?.workingDirectory);
   const sessionId = opts.resumeSessionId ?? def.runtime?.sessionId ?? `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.taskOverride ?? def.task.prompt, opts.definitionHash);
+  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.taskOverride ?? def.task.prompt, opts.definitionHash, { definitionJson: opts.definitionSnapshot ?? null });
+  // Memory episodes are joined to the run by id; the runtime is built by the route
+  // before the run row exists, so the id is attached here.
+  opts.memory?.setRunId(runId);
   const auditLevel = resolveAuditLevel(opts.auditLevel);
   const rank = AUDIT_RANK[auditLevel];
 
@@ -169,11 +183,29 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
   let started = 0;
 
   const client = new CopilotClient({
-    onListModels: () => [{ id: def.provider.model, name: def.provider.model, capabilities: { supports: { vision: false, reasoningEffort: false } }, limits: { max_context_window_tokens: 128000 } } as never],
+    onListModels: () => [modelListing(def) as never],
   });
   await client.start();
+  let outcome: 'done' | 'failed' | 'aborted' = 'failed';
   try {
-    const sessionOpts = toSessionOptions(def, apiKey);
+    // ---- long-term memory: index → recall → inject -------------------------
+    let memoryContext: string | undefined;
+    if (opts.memory) {
+      opts.memory.setEventSink((type, payload) => persist(type, payload, true, AUDIT_RANK.default));
+      const taskText = opts.taskOverride ?? def.task.prompt;
+      try {
+        await opts.memory.refreshCodeGraph(workspace.root);
+        const recalled = await opts.memory.recall(deriveRecallQuery(def, taskText));
+        memoryContext = recalled.block;
+        persist('memory.injected', {
+          datasets: recalled.datasets, mode: recalled.mode, chars: recalled.chars,
+          nodes: recalled.nodes, ids: recalled.ids.slice(0, 40), injected: Boolean(memoryContext),
+        }, true, AUDIT_RANK.minimal);
+      } catch (e) {
+        persist('memory.error', { error: (e as Error).message }, true, AUDIT_RANK.default);
+      }
+    }
+    const sessionOpts = toSessionOptions(def, apiKey, { memoryContext });
     // Route model traffic through the one-shot wire proxy when active
     if (usageProxy) {
       const provider = (sessionOpts as { provider?: Record<string, unknown> }).provider;
@@ -205,6 +237,18 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
       const existing = (sessionOpts as { tools?: unknown[] }).tools ?? [];
       const names = new Set(harnessTools.map((t) => t.name));
       (sessionOpts as Record<string, unknown>).tools = [...harnessTools, ...existing.filter((t) => !names.has((t as { name?: string }).name ?? ''))];
+    }
+    if (opts.memory) {
+      const memoryTools = buildMemoryTools({
+        store: opts.memory.store,
+        config: opts.memory.config,
+        dataset: opts.memory.agentDataset,
+        runId,
+        onEvent: (type, payload) => persist(type, payload, true, AUDIT_RANK.default),
+      });
+      const existing = (sessionOpts as { tools?: unknown[] }).tools ?? [];
+      const names = new Set(memoryTools.map((t) => t.name));
+      (sessionOpts as Record<string, unknown>).tools = [...memoryTools, ...existing.filter((t) => !names.has((t as { name?: string }).name ?? ''))];
     }
     // Merge MCP registry references (mcp.use) into concrete session server configs
     if (def.mcp?.use?.length && opts.mcpRegistry) {
@@ -265,11 +309,20 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     session.on('tool.execution_start', (e: unknown) => {
       const ev = e as { id?: string; agentId?: string; data?: Record<string, unknown> };
       persist('tool.call', { eventId: ev.id, subAgent: ev.agentId, data: safe(ev.data) }, true, AUDIT_RANK.default);
+      const d = ev.data as { toolName?: string; arguments?: unknown } | undefined;
+      if (d?.toolName) opts.memory?.collector.noteToolStart(d.toolName, d.arguments);
     });
     // Tool results (full output incl. text/structured content, success flag) — visible from 'default'
     session.on('tool.execution_complete', (e: unknown) => {
       const ev = e as { id?: string; agentId?: string; data?: Record<string, unknown> };
       persist('tool.result', { eventId: ev.id, subAgent: ev.agentId, data: safe(ev.data) }, true, AUDIT_RANK.default);
+      const d = ev.data as {
+        toolName?: string; success?: boolean; arguments?: unknown;
+        result?: { content?: string; detailedContent?: string };
+      } | undefined;
+      if (d?.toolName) {
+        opts.memory?.collector.noteToolResult(d.toolName, d.arguments, d.success, d.result?.content ?? d.result?.detailedContent);
+      }
     });
     // Partial results / progress flashes — full verbosity only (ephemeral in the SDK)
     session.on('tool.execution_partial_result', (e: unknown) => {
@@ -314,6 +367,8 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     session.on('session.error', (e: unknown) => {
       const ev = e as { data?: Record<string, unknown> };
       persist('session.error', { data: safe(ev.data) }, true, AUDIT_RANK.minimal);
+      const d = ev.data as { message?: string; error?: string } | undefined;
+      opts.memory?.collector.setRunError(d?.message ?? d?.error);
     });    session.on('assistant.usage', (e: unknown) => {
       persist('assistant.usage', { event: safe(e) }, true, AUDIT_RANK.default);
       // With the wire proxy active, exact accounting comes from usage.capture events
@@ -352,6 +407,8 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
       const response = (await (session as { sendAndWait: (a: unknown, t?: number) => Promise<unknown> }).sendAndWait({ prompt: sendArgs.prompt, mode: sendArgs.mode }, turnTimeoutMs)) as { data?: { content?: string }; content?: string; text?: string };
       text = response?.data?.content ?? response?.content ?? response?.text ?? JSON.stringify(safe(response)).slice(0, 8000);
     }
+    outcome = 'done';
+    opts.memory?.collector.setSummary(text);
     persist('run.complete', { chars: text.length, durationMs: Date.now() - started }, true, AUDIT_RANK.minimal);
     opts.db.finishRun(runId, 'done');
     try { opts.db.upsertSession({ sessionId, status: 'idle-done', summary: text.slice(0, 200) }); } catch { /* best-effort */ }
@@ -364,6 +421,8 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     return { runId, sessionId, traceId, text };
   } catch (err) {
     const message = (err as Error).message;
+    outcome = 'failed';
+    opts.memory?.collector.setRunError(message);
     activeStops.delete(runId);
     const aborted = abortedRuns.delete(runId);
     persist(aborted ? 'run.aborted' : 'run.error', aborted ? { reason: message } : { error: message }, true, AUDIT_RANK.minimal);
@@ -373,6 +432,13 @@ export async function executeRun(opts: RunOptions): Promise<{ runId: string; ses
     recordUsageTotals();
     await usageProxy?.close();
     throw err;
+  } finally {
+    // Failures teach the most: capture the episode for every outcome, then index
+    // whatever this run created so lessons point at real, durable paths.
+    if (opts.memory) {
+      try { await opts.memory.indexRunOutput(runRoot); } catch { /* best-effort */ }
+      try { await opts.memory.finish(outcome); } catch { /* best-effort */ }
+    }
   }
 }
 

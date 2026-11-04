@@ -15,6 +15,8 @@ export interface McpServerConfig {
    * config shape when omitted.
    */
   authType?: 'none' | 'headers' | 'env' | 'oauth';
+  /** Remote-server OAuth (SDK pass-through) — runtime-managed auth for http/sse servers. */
+  oauthClientId?: string; oauthScopes?: string[]; oauthPublicClient?: boolean; oauthGrantType?: string;
 }
 
 /** Map registry config -> SDK MCPServerConfig (canonical field names). */
@@ -29,6 +31,11 @@ export function toSdkMcpConfig(c: McpServerConfig): Record<string, unknown> {
   } else {
     out.url = c.url;
     if (c.headers) out.headers = c.headers;
+    // Remote OAuth fields pass straight through to the SDK's runtime-managed auth.
+    if (c.oauthClientId) out.oauthClientId = c.oauthClientId;
+    if (c.oauthScopes?.length) out.oauthScopes = c.oauthScopes;
+    if (c.oauthPublicClient != null) out.oauthPublicClient = c.oauthPublicClient;
+    if (c.oauthGrantType) out.oauthGrantType = c.oauthGrantType;
   }
   const t = c.timeout ?? c.timeoutMs;
   if (t) out.timeout = t;

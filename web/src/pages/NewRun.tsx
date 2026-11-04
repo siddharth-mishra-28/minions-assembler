@@ -22,6 +22,7 @@ export default function NewRun() {
   const [inline, setInline] = useState('');
   const [audit, setAudit] = useState('');
   const [timeoutMin, setTimeoutMin] = useState('');
+  const [runDir, setRunDir] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancelled = useRef(false);
@@ -67,6 +68,7 @@ export default function NewRun() {
       if (!(ms >= 1000 && ms <= 21600000)) { setError('Timeout must be between 1 second and 360 minutes.'); return; }
       body.turnTimeoutMs = ms;
     }
+    if (runDir.trim()) body.runDir = runDir.trim();
 
     setBusy(true);
     const known = new Set<string>();
@@ -143,6 +145,10 @@ export default function NewRun() {
               <Input type="number" min={0.02} max={360} step="any" value={timeoutMin} onChange={(e) => setTimeoutMin(e.target.value)} disabled={busy} placeholder="server default" />
             </Field>
           </div>
+
+          <Field label="Working directory (optional)" hint="Reuse a folder across runs, for example when a second phase builds on the first. Must be inside the server workspace.">
+            <Input value={runDir} onChange={(e) => setRunDir(e.target.value)} disabled={busy} placeholder="default: a fresh run_<id> folder" spellCheck={false} className="font-mono text-xs" />
+          </Field>
 
           <ErrorNote error={error} />
           <div className="flex items-center justify-end gap-2">

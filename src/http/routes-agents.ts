@@ -1,5 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadAgentDefinition, validateDefinitionObject, redactedForLog } from '../agents/loader.js';
 import type { DbAdapter } from '../store/adapter.js';
 import { errorSchema } from './route-schemas.js';
@@ -17,7 +20,13 @@ import { parseAgentMarkdown, mdProfileToDefinition, loadAgentMarkdown, scanInstr
 export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAdapter; platform?: PlatformStore }): Promise<void> {
   const { db } = ctx;
 
-  const FIXTURE_PATH = './examples/expense-tracker-dev.agent.json';
+  // Resolve the bundled example from the package root first so `GET /api/templates/default`
+  // works from an installed tarball regardless of the process working directory. The cwd
+  // candidate keeps `tsx src/...` and repo-local development working.
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const EXAMPLE_FILE = 'full-stack-engineer.agent.json';
+  const FIXTURE_PATH = [join(HERE, '..', '..', 'examples', EXAMPLE_FILE), join(process.cwd(), 'examples', EXAMPLE_FILE)]
+    .find((p) => existsSync(p)) ?? join(process.cwd(), 'examples', EXAMPLE_FILE);
 
   const intEnv = (name: string, fallback: number): number => {
     const v = Number(process.env[name]);
@@ -31,8 +40,8 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
   const agentSummarySchema = {
     type: 'object',
     properties: {
-      id: { type: 'string', example: 'expense-tracker-dev@1.0.0' },
-      name: { type: 'string', example: 'expense-tracker-dev' },
+      id: { type: 'string', example: 'full-stack-engineer@1.0.0' },
+      name: { type: 'string', example: 'full-stack-engineer' },
       version: { type: 'string', example: '1.0.0' },
       created_at: { type: 'string', example: '2026-10-11T13:23:16.580Z' },
     },
@@ -49,7 +58,7 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
       body: {
         type: 'object',
         properties: {
-          definitionPath: { type: 'string', description: 'Server-side path to a definition JSON file (mutually exclusive with `definition`)', example: './examples/expense-tracker-dev.agent.json' },
+          definitionPath: { type: 'string', description: 'Server-side path to a definition JSON file (mutually exclusive with `definition`)', example: './examples/full-stack-engineer.agent.json' },
           definition: { type: 'object', description: 'Inline AgentDefinition v1.0 object (mutually exclusive with `definitionPath`)' },
         },
       },
@@ -115,7 +124,7 @@ export async function registerAgentRoutes(app: FastifyInstance, ctx: { db: DbAda
     schema: {
       tags: ['agents'],
       summary: 'Save an agent definition as draft for re-use without publishing',
-      description: 'Persists partial or complete agent definition with status draft. Does not appear on /ui/agents until published.',
+      description: 'Persists partial or complete agent definition with status draft. Does not appear in the agent list until published.',
       body: {
         type: 'object',
         required: ['definition'],

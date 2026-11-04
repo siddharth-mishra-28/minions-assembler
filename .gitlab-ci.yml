@@ -1,0 +1,117 @@
+# Minions Assembler — GitLab CI acceptance pipeline.
+#
+# One npm artifact is built once (`package`) and every later job installs that same
+# tarball globally. Two agent phases share one workspace through --runDir, then an
+# independent job boots the generated store, exercises the API and drives Chromium.
+stages: [package, generate, verify, cockpit]
+
+default:
+  image: node:22-bookworm
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .npm/
+      - .m2/repository/
+
+variables:
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+package:
+  stage: package
+  script:
+    - npm ci --no-audit --no-fund
+    - npm run typecheck
+    - npm run typecheck:web
+    - npm test
+    - npm run test:web
+    - npm pack
+    - ls -lh minions-assembler-1.0.0.tgz
+    - tar -tzf minions-assembler-1.0.0.tgz | grep -E 'dist/web/index.html|examples/full-stack-engineer.agent.json'
+    - if tar -tzf minions-assembler-1.0.0.tgz | grep -qE '(^|/)src/ui/|routes-ui'; then echo 'legacy UI leaked into the artifact' >&2; exit 1; fi
+  artifacts:
+    paths:
+      - minions-assembler-1.0.0.tgz
+    expire_in: 1 week
+  timeout: 30m
+
+.generate:
+  stage: generate
+  needs: [package]
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends maven openjdk-17-jdk-headless
+    - npm install -g ./minions-assembler-1.0.0.tgz
+    - minions-assembler --version
+    - minions-assembler validate --agentDefinition examples/full-stack-engineer.agent.json
+    - mkdir -p data reports
+  script:
+    - minions-assembler run --agentDefinition examples/full-stack-engineer.agent.json --task "$(cat ci/tasks/backend.md)" --db "$CI_PROJECT_DIR/data/minion.db" --runDir "$CI_PROJECT_DIR/app" --approval autopilot --no-stream --output-format json | tee reports/backend-run.json
+  artifacts:
+    when: always
+    paths:
+      - app/
+      - reports/
+    exclude:
+      - "app/backend/target/**"
+      - "app/data/**"
+      - "app/**/.audit/**"
+      - "app/frontend/node_modules/**"
+      - "app/frontend/.next/**"
+      - "app/**/*.log"
+    expire_in: 1 week
+  timeout: 2h
+
+generate_backend:
+  extends: .generate
+
+generate_frontend:
+  extends: .generate
+  needs: [package, generate_backend]
+  script:
+    - minions-assembler run --agentDefinition examples/full-stack-engineer.agent.json --task "$(cat ci/tasks/frontend.md)" --db "$CI_PROJECT_DIR/data/minion.db" --runDir "$CI_PROJECT_DIR/app" --approval autopilot --no-stream --output-format json | tee reports/frontend-run.json
+
+app_check:
+  stage: verify
+  needs: [package, generate_backend, generate_frontend]
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends maven openjdk-17-jdk-headless
+    - npm ci --no-audit --no-fund
+    - npx -y playwright@1.64.1 install --with-deps chromium
+  script:
+    - node ci/verify-app.mjs --app app --api-port 8101 --web-port 3301 --out reports/app --mode gitlab
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    expire_in: 1 week
+  timeout: 2h
+
+cockpit_check:
+  stage: cockpit
+  needs: [package]
+  before_script:
+    - npm ci --no-audit --no-fund
+    - npx -y playwright@1.64.1 install --with-deps chromium
+    - npm install -g ./minions-assembler-1.0.0.tgz
+    - mkdir -p data reports/cockpit/screenshots workspace
+  script:
+    - MINION_WORKSPACE="$CI_PROJECT_DIR/workspace" minions-assembler serve --port 3110 --db "$CI_PROJECT_DIR/data/cockpit.db" > reports/cockpit/serve.log 2>&1 &
+    - for i in $(seq 1 90); do curl -fsS http://127.0.0.1:3110/api/status >/dev/null && break; sleep 1; done
+    - test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3110/)" = "200"
+    - test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3110/docs/)" = "200"
+    - test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3110/ui/dashboard)" = "404"
+    - node ci/cockpit-smoke.mjs --base http://127.0.0.1:3110 --out reports/cockpit
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    expire_in: 1 week
+  timeout: 45m

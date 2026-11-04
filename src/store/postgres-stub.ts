@@ -18,6 +18,7 @@ export class PostgresAdapter implements DbAdapter {
   recordUsage(): void { throw new Error('Not implemented'); }
   getRun(): undefined { throw new Error('Not implemented'); }
   listRuns(): [] { throw new Error('Not implemented'); }
+  getRunDefinition(): undefined { throw new Error('Not implemented'); }
   getEvents(): [] { throw new Error('Not implemented'); }
   runsTimeline(): [] { throw new Error('Not implemented'); }
   runsByModel(): [] { throw new Error('Not implemented'); }

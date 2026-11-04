@@ -1,5 +1,6 @@
 import { CopilotClient } from '@github/copilot-sdk';
-import { toSessionOptions, resolveApiKey } from '../agents/translator.js';
+import { toSessionOptions, resolveApiKey, modelListing } from '../agents/translator.js';
+import { createHash } from 'node:crypto';
 import { resolveBuiltinTools } from '../agents/tools-policy.js';
 import { expandMcpRefs } from '../mcp/mcp.js';
 import type { McpServerConfig } from '../mcp/mcp.js';
@@ -10,6 +11,9 @@ import { resolveChatWorkspace } from '../core/workspace.js';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildHarnessTools, autoMkdirPreTool, harnessEnabled, resolveTurnTimeoutMs } from '../agents/harness-tools.js';
+import { buildMemoryTools } from '../memory/tools.js';
+import { deriveRecallQuery } from '../memory/context.js';
+import type { MemoryRuntime } from '../memory/runtime.js';
 import { joinRunRoot } from './runner.js';
 import { resolveProviderRef } from '../agents/default-agent.js';
 import { PlatformStore } from '../store/platform.js';
@@ -48,10 +52,16 @@ export interface ChatTurnOptions {
   mcpRegistry?: Map<string, McpServerConfig>;
   mcpRegistryTools?: Map<string, string[]>;
   turnTimeoutMs?: number;
+  /** Real definition hash for run provenance (falls back to a hash of the resolved definition). */
+  definitionHash?: string;
+  /** Sealed, portable definition JSON snapshotted onto the run row. */
+  definitionSnapshot?: string;
   /** Streaming deltas as they arrive (SSE → browser). */
   onDelta?: (text: string) => void;
   /** Model reasoning/tool activity as it happens — feeds live chat UI (Thinking section). */
   onActivity?: (update: ActivityUpdate) => void;
+  /** Long-term memory: recall before the turn, capture an episode after it. */
+  memory?: MemoryRuntime;
 }
 
 export type ActivityUpdate =
@@ -98,9 +108,15 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
   // Run rows record the registered agent's canonical definition hash (same value as
   // headless runs); synthesized default/project agents keep the 'chat' placeholder.
   // Never hash `def` here: it contains the resolved (sealed, random-IV) provider key.
-  let definitionHash = 'chat';
-  try { definitionHash = opts.db.getAgent(opts.agentId)?.definition_hash ?? 'chat'; } catch { /* synthesized agent */ }
-  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.content, definitionHash, { source: 'chat', threadId: opts.threadId, projectId: opts.projectId });
+  let definitionHash = opts.definitionHash ?? 'chat';
+  try { definitionHash = opts.db.getAgent(opts.agentId)?.definition_hash ?? definitionHash; } catch { /* synthesized agent */ }
+  const runId = opts.db.createRun(opts.agentId, sessionId, traceId, def.provider.model, def.provider.type, opts.content, definitionHash, {
+    source: 'chat',
+    threadId: opts.threadId,
+    projectId: opts.projectId,
+    definitionJson: opts.definitionSnapshot ?? null,
+  });
+  opts.memory?.setRunId(runId);
   // Audit lives outside project folders when an auditDir is supplied; legacy threads keep `<ws>/run_<id>/.audit`.
   const auditDir = opts.auditRoot ? resolve(opts.auditRoot, runId) : `${joinRunRoot(workspaceRoot, runId)}/.audit`;
   mkdirSync(auditDir, { recursive: true });
@@ -136,8 +152,25 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
     try { opts.db.recordUsage(runId, { tokensIn: usageTotals.tokIn, tokensOut: usageTotals.tokOut, durationMs: Date.now() - started, endpoint: 'usage-proxy' }); } catch { /* best-effort */ }
   };
 
+  // ---- long-term memory: index → recall → inject ---------------------------
+  let memoryContext: string | undefined;
+  if (opts.memory) {
+    opts.memory.setEventSink((type, payload) => persistChatEvent(audit, opts.db, runId, type, payload));
+    try {
+      await opts.memory.refreshCodeGraph(sessionCwd);
+      const recalled = await opts.memory.recall(deriveRecallQuery(def, opts.content));
+      memoryContext = recalled.block;
+      persistChatEvent(audit, opts.db, runId, 'memory.injected', {
+        datasets: recalled.datasets, mode: recalled.mode, chars: recalled.chars,
+        nodes: recalled.nodes, ids: recalled.ids.slice(0, 40), injected: Boolean(memoryContext),
+      });
+    } catch (e) {
+      persistChatEvent(audit, opts.db, runId, 'memory.error', { error: (e as Error).message });
+    }
+  }
+
   const client = new CopilotClient({
-    onListModels: () => [{ id: def.provider.model, name: def.provider.model, capabilities: { supports: { vision: false, reasoningEffort: false } }, limits: { max_context_window_tokens: 128000 } } as never],
+    onListModels: () => [modelListing(def) as never],
   });
   await client.start();
   let session: Awaited<ReturnType<CopilotClient['createSession']>> | undefined;
@@ -147,9 +180,10 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
     void (session as { abort?: () => Promise<void> } | undefined)?.abort?.().catch(() => { /* already finished */ });
   };
   opts.signal?.addEventListener('abort', onAbort, { once: true });
+  let outcome: 'done' | 'failed' | 'aborted' = 'failed';
   try {
     if (opts.signal?.aborted) throw new TurnAborted(runId);
-    const sessionOpts = toSessionOptions(def, apiKey);
+    const sessionOpts = toSessionOptions(def, apiKey, { memoryContext });
     if (usageProxy) {
       const provider = (sessionOpts as { provider?: Record<string, unknown> }).provider;
       if (provider && 'baseUrl' in provider) provider.baseUrl = usageProxy.url;
@@ -163,6 +197,18 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
       const existing = (sessionOpts as { tools?: unknown[] }).tools ?? [];
       const names = new Set(harnessTools.map((t) => t.name));
       (sessionOpts as Record<string, unknown>).tools = [...harnessTools, ...existing.filter((t) => !names.has((t as { name?: string }).name ?? ''))];
+    }
+    if (opts.memory) {
+      const memoryTools = buildMemoryTools({
+        store: opts.memory.store,
+        config: opts.memory.config,
+        dataset: opts.memory.agentDataset,
+        runId,
+        onEvent: (type, payload) => persistChatEvent(audit, opts.db, runId, type, payload),
+      });
+      const existing = (sessionOpts as { tools?: unknown[] }).tools ?? [];
+      const names = new Set(memoryTools.map((t) => t.name));
+      (sessionOpts as Record<string, unknown>).tools = [...memoryTools, ...existing.filter((t) => !names.has((t as { name?: string }).name ?? ''))];
     }
     if (def.mcp?.use?.length && opts.mcpRegistry) {
       const { servers, disabled } = expandMcpRefs(def.mcp.servers, def.mcp.use, opts.mcpRegistry, opts.mcpRegistryTools ?? new Map());
@@ -238,6 +284,7 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
     session.on('tool.execution_start', (e: unknown) => {
       persistChatEvent(audit, opts.db, runId, 'tool.call', sanitizeEvent(e));
       const d = (e as { data?: { toolName?: string; toolCallId?: string; arguments?: unknown } }).data;
+      if (d?.toolName) opts.memory?.collector.noteToolStart(d.toolName, d.arguments);
       if (d?.toolName) {
         const act: ToolActivity = { callId: d.toolCallId ?? '', name: d.toolName, args: d.arguments, result: '', success: undefined };
         tools.push(act);
@@ -255,8 +302,13 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
         else tools.push({ ...act, result: text, success: d.success });
         opts.onActivity?.({ type: 'tool-complete', callId: d.toolCallId, name: d.toolName ?? act.name, result: text, success: d.success });
       }
+      if (d?.toolName) opts.memory?.collector.noteToolResult(d.toolName, undefined, d.success, d.result?.content ?? d.result?.detailedContent);
     });
-    session.on('session.error', (e: unknown) => persistChatEvent(audit, opts.db, runId, 'session.error', sanitizeEvent(e)));
+    session.on('session.error', (e: unknown) => {
+      persistChatEvent(audit, opts.db, runId, 'session.error', sanitizeEvent(e));
+      const d = (e as { data?: { message?: string; error?: string } }).data;
+      opts.memory?.collector.setRunError(d?.message ?? d?.error);
+    });
 
     const turnTimeoutMs = opts.turnTimeoutMs ?? resolveTurnTimeoutMs(def, undefined);
     persistChatEvent(audit, opts.db, runId, 'chat.send', { content: opts.content.slice(0, 2000), mode: 'resume' });
@@ -266,6 +318,8 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
     if (reasoning) persistChatEvent(audit, opts.db, runId, 'chat.reasoning', { content: reasoning });
     persistChatEvent(audit, opts.db, runId, 'chat.reply', { chars: text.length });
     if (aborted) throw new TurnAborted(runId);
+    outcome = 'done';
+    opts.memory?.collector.setSummary(text);
     opts.db.finishRun(runId, 'done');
     try { opts.db.upsertSession({ sessionId, status: 'idle-done', summary: text.slice(0, 200) }); } catch { /* best-effort */ }
     try { await (session as { disconnect?: () => Promise<void> }).disconnect?.(); } catch { /* noop */ }
@@ -276,6 +330,8 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
   } catch (err) {
     const wasAborted = aborted || err instanceof TurnAborted;
     const message = wasAborted ? 'cancelled by user' : (err as Error).message;
+    outcome = wasAborted ? 'aborted' : 'failed';
+    if (!wasAborted) opts.memory?.collector.setRunError(message);
     persistChatEvent(audit, opts.db, runId, wasAborted ? 'chat.cancelled' : 'chat.error', { error: message });
     opts.db.finishRun(runId, 'failed', message);
     try { await (session as { disconnect?: () => Promise<void> } | undefined)?.disconnect?.(); } catch { /* noop */ }
@@ -286,6 +342,8 @@ export async function executeChatTurn(opts: ChatTurnOptions): Promise<ChatTurnRe
     throw err;
   } finally {
     opts.signal?.removeEventListener('abort', onAbort);
+    // Every turn teaches something — failed turns most of all.
+    try { await opts.memory?.finish(outcome); } catch { /* best-effort */ }
   }
 }
 

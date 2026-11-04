@@ -84,7 +84,12 @@
           }
         },
         "agentsMdPaths": { "type": "array", "items": { "type": "string" } },
-        "refreshDiscoveryCache": { "type": "boolean", "default": false }
+        "refreshDiscoveryCache": { "type": "boolean", "default": false },
+        "directories": {
+          "description": "SDK instructionDirectories: folders scanned for *.instructions.md files with frontmatter (side-by-side with agentsMdPaths).",
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "knowledge": {
@@ -175,12 +180,22 @@
               "name": { "type": "string" },
               "description": { "type": "string" },
               "parametersSchema": { "type": "object" },
-              "skipPermission": { "type": "boolean" }
+              "skipPermission": { "type": "boolean" },
+              "defer": { "description": "SDK tool deferral: 'never' keeps the tool visible to the model (default); 'auto' lets tool search defer it.", "type": "string", "enum": ["auto", "never"], "default": "never" },
+              "overridesBuiltInTool": { "description": "Required intent marker to replace a same-named built-in tool.", "type": "boolean" },
+              "isTerminal": { "description": "Marks the tool as terminal-shaped for the runtime.", "type": "boolean" },
+              "namespace": { "type": "string" },
+              "metadata": { "type": "object" }
             }
           }
         },
         "available": { "type": "array", "items": { "type": "string" } },
         "excluded": { "type": "array", "items": { "type": "string" } },
+        "defaultAgentExcluded": {
+          "description": "SDK defaultAgent.excludedTools: tools hidden from the default/main agent only (still available to custom agents that include them).",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "harness": {
           "description": "Inject coding-harness tools (bash, mkdir, write) and auto-create parent directories for create/write/edit. Default true.",
           "type": "boolean",
@@ -238,7 +253,18 @@
               "url": { "type": "string" },
               "headers": { "type": "object", "additionalProperties": { "type": "string" } },
               "tools": { "type": "array", "items": { "type": "string" } },
-              "timeoutMs": { "type": "integer", "minimum": 1 }
+              "timeoutMs": { "type": "integer", "minimum": 1 },
+              "workingDirectory": { "description": "SDK canonical alias of cwd for local/stdio servers.", "type": "string" },
+              "timeout": { "description": "SDK canonical alias of timeoutMs.", "type": "integer", "minimum": 1 },
+              "authType": {
+                "description": "Host-side auth method for registry/probe/OAuth flows: 'none' | 'headers' (static Authorization) | 'env' (stdio credentials) | 'oauth' (browser PKCE flow). Auto-derived from the config shape when omitted.",
+                "type": "string",
+                "enum": ["none", "headers", "env", "oauth"]
+              },
+              "oauthClientId": { "description": "Remote-server OAuth (SDK pass-through): pre-registered client id for runtime-managed OAuth.", "type": "string" },
+              "oauthScopes": { "type": "array", "items": { "type": "string" } },
+              "oauthPublicClient": { "type": "boolean" },
+              "oauthGrantType": { "type": "string" }
             }
           }
         },
@@ -262,6 +288,87 @@
                 }
               }
             ]
+          }
+        }
+      }
+    },
+    "memory": {
+      "description": "Long-term memory: agent-private + shared platform graph (files/symbols/imports, facts, lessons learned from failures). Optional — omitted values resolve from the platform defaults row in the database, then code defaults. Retrieval is lexical + graph by default; vector search only activates when an embedding endpoint is configured.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "recall": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "k": { "type": "integer", "minimum": 1, "maximum": 50 },
+            "hops": { "description": "Graph expansion depth (0 = seeds only).", "type": "integer", "minimum": 0, "maximum": 3 },
+            "kinds": { "type": "array", "items": { "type": "string", "enum": ["File", "Symbol", "Package", "Fact", "Lesson", "Episode", "Preference", "Task"] } },
+            "maxChars": { "description": "Character budget for the injected memory block (≈ tokens × 4).", "type": "integer", "minimum": 200, "maximum": 20000 },
+            "includeFacts": { "description": "Render edge statements (e.g. \"a imports b\") alongside nodes.", "type": "boolean" }
+          }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agent": { "description": "Read this agent's own dataset (agent:<name>).", "type": "boolean" },
+            "platform": { "description": "Read the shared platform dataset.", "type": "boolean" },
+            "crossAgentRead": { "description": "Read other agents' datasets too (off by default).", "type": "boolean" },
+            "writeTarget": { "description": "Where memory_note/memory_lesson write: the agent's dataset or the shared platform one.", "type": "string", "enum": ["agent", "platform"] }
+          }
+        },
+        "retrieval": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "type": "string", "enum": ["lexical", "vector", "hybrid"], "default": "lexical" },
+            "embedding": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provider": { "type": "string", "enum": ["none", "openai", "ollama", "custom"], "default": "none" },
+                "model": { "type": "string" },
+                "baseUrl": { "description": "OpenAI-compatible base URL (e.g. http://localhost:11434/v1 for Ollama).", "type": "string" },
+                "apiKeyRef": { "description": "${ENV_VAR} or enc:v1 token reference — never a literal secret.", "type": "string" },
+                "batchSize": { "type": "integer", "minimum": 1, "maximum": 256 },
+                "dimensions": { "type": "integer", "minimum": 1, "maximum": 8192 }
+              }
+            }
+          }
+        },
+        "codeGraph": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "dataset": { "description": "Where the code graph lives: the shared platform dataset (default, one copy for all agents) or this agent's private dataset.", "type": "string", "enum": ["platform", "agent"] },
+            "root": { "description": "Root to index (relative to the workspace, or absolute).", "type": "string" },
+            "include": { "type": "array", "items": { "type": "string" } },
+            "exclude": { "type": "array", "items": { "type": "string" } },
+            "maxFiles": { "type": "integer", "minimum": 1, "maximum": 50000 },
+            "symbols": { "type": "boolean" },
+            "autoRefresh": { "description": "Incrementally refresh the index at the start of each run/turn.", "type": "boolean" }
+          }
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "episodes": { "type": "boolean" },
+            "toolFailures": { "type": "boolean" },
+            "commands": { "type": "boolean" }
+          }
+        },
+        "distill": { "type": "string", "enum": ["heuristic", "llm", "off"], "default": "heuristic" },
+        "feedbackInfluence": { "description": "How strongly past outcomes reorder recall (0 = ignore feedback).", "type": "number", "minimum": 0, "maximum": 1 },
+        "lessons": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoPromoteAcrossAgents": { "description": "Promote a lesson to the shared platform dataset once N distinct agents learned it (0 = off).", "type": "integer", "minimum": 0, "maximum": 50 }
           }
         }
       }
@@ -319,10 +426,47 @@
         "maxAiCredits": { "type": "number" },
         "logLevel": { "type": "string", "enum": ["error", "warning", "info", "debug"] },
         "autopilot": {
-          "description": "Session autopilot mode (experimental in the SDK runtime).",
-          "type": "boolean"
+          "description": "Session autopilot (experimental in the SDK runtime): a toggle, or { continuationEnabled, maxContinues } options.",
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "continuationEnabled": { "type": "boolean" },
+                "maxContinues": { "type": "integer", "minimum": 0 }
+              }
+            }
+          ]
         },
-        "autopilot": { "type": "boolean" },
+        "reasoningEffort": {
+          "description": "Session-level reasoning effort for supported models (per-sub-agent overrides live in agents[].reasoningEffort).",
+          "type": "string",
+          "enum": ["low", "medium", "high", "xhigh", "max"]
+        },
+        "capi": {
+          "description": "Copilot API options (model: 'auto' routing preference).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoTier": { "type": "string", "enum": ["efficiency", "balance", "intelligence", "fast"] }
+          }
+        },
+        "modelCapabilities": {
+          "description": "Capabilities advertised to the runtime through the host's model listing (replaces hardcoded caps).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "vision": { "type": "boolean" },
+            "reasoningEffort": { "type": "boolean" },
+            "maxContextWindowTokens": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "trustWorkingDirectory": {
+          "description": "SDK trustWorkingDirectory (create-time only; not available on resume).",
+          "type": "string",
+          "enum": ["session", "user"]
+        },
         "clientInfo": {
           "type": "object",
           "additionalProperties": false,

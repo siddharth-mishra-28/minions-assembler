@@ -1,3 +1,5 @@
+import type { MemoryConfig } from '../memory/types.js';
+
 export type ToolDecision = 'allow' | 'ask' | 'deny';
 
 export interface ToolBuiltinsPolicy {
@@ -28,7 +30,11 @@ export interface AgentDefinition {
      */
     useCopilotDefaultPrompt?: boolean;
   };
-  instructions?: { global?: string[]; scoped?: { applyTo: string; body: string }[]; agentsMdPaths?: string[]; refreshDiscoveryCache?: boolean };
+  instructions?: {
+    global?: string[]; scoped?: { applyTo: string; body: string }[]; agentsMdPaths?: string[]; refreshDiscoveryCache?: boolean;
+    /** SDK `instructionDirectories`: folders scanned for *.instructions.md files (side-by-side with agentsMdPaths). */
+    directories?: string[];
+  };
   knowledge?: {
     workingDirectory?: string;
     additionalDirectories?: string[];
@@ -45,8 +51,14 @@ export interface AgentDefinition {
   skills?: { directories?: string[]; disabled?: string[] };
   task: { prompt: string; deliveryMode?: 'enqueue' | 'immediate'; attachments?: unknown[] };
   tools?: {
-    custom?: { name: string; description: string; parametersSchema: Record<string, unknown>; skipPermission?: boolean }[];
+    custom?: {
+      name: string; description: string; parametersSchema: Record<string, unknown>; skipPermission?: boolean;
+      /** SDK tool flags: defer discovery ('auto'|'never'), replace a same-named built-in, terminal-shaped tool. */
+      defer?: 'auto' | 'never'; overridesBuiltInTool?: boolean; isTerminal?: boolean; namespace?: string; metadata?: Record<string, unknown>;
+    }[];
     available?: string[]; excluded?: string[];
+    /** SDK `defaultAgent.excludedTools`: tools hidden from the default/main agent only. */
+    defaultAgentExcluded?: string[];
     permissionPolicy?: 'deny-all' | 'approve-all-ci-only' | 'pattern-list';
     patterns?: { tool: string; decision: 'allow' | 'deny' | 'ask'; reason?: string }[];
     /**
@@ -71,13 +83,23 @@ export interface AgentDefinition {
   mcp?: {
     servers?: Record<string, {
       type: 'local' | 'stdio' | 'http' | 'sse';
-      command?: string; args?: string[]; env?: Record<string, string>; cwd?: string;
-      url?: string; headers?: Record<string, string>; tools?: string[]; timeoutMs?: number;
+      command?: string; args?: string[]; env?: Record<string, string>; cwd?: string; workingDirectory?: string;
+      url?: string; headers?: Record<string, string>; tools?: string[]; timeoutMs?: number; timeout?: number;
+      /** Host-side auth method for registry/probe flows ('none'|'headers'|'env'|'oauth'). */
+      authType?: 'none' | 'headers' | 'env' | 'oauth';
+      /** Remote-server OAuth (SDK pass-through) — runtime-managed auth for http/sse servers. */
+      oauthClientId?: string; oauthScopes?: string[]; oauthPublicClient?: boolean; oauthGrantType?: string;
     }>;
     disabled?: string[]; timeoutDefaultMs?: number;
     /** References to servers registered in the MCP registry (POST /api/mcp). */
     use?: (string | { name: string; allow?: string[]; deny?: string[]; disabled?: boolean })[];
   };
+  /**
+   * Long-term memory (agent dataset + shared platform dataset + code graph).
+   * Omitted keys resolve from the platform defaults row in the database, then
+   * from code defaults — see src/memory/config.ts.
+   */
+  memory?: Partial<MemoryConfig>;
   provider: {
     type: 'openai' | 'azure' | 'anthropic';
     /** Id of a Settings provider; resolved at run time (see resolveProviderRef). */
@@ -96,6 +118,13 @@ export interface AgentDefinition {
   };
   runtime?: {
     streaming?: boolean; sessionId?: string; resume?: boolean; idleTimeoutSecs?: number;
+    /** SDK session-level model controls (per-sub-agent overrides live in agents[]). */
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    capi?: { autoTier?: 'efficiency' | 'balance' | 'intelligence' | 'fast' };
+    /** Reported via the model listing the host serves to the SDK (replaces hardcoded caps). */
+    modelCapabilities?: { vision?: boolean; reasoningEffort?: boolean; maxContextWindowTokens?: number };
+    /** SDK `trustWorkingDirectory` (create-time only): 'session' | 'user'. */
+    trustWorkingDirectory?: 'session' | 'user';
     /** Render override for the tool-search tool: hide it (enabled false) or defer discovery below a threshold. */
     toolSearch?: { enabled?: boolean; deferThreshold?: number };
     /** Built-in runtime agents (specialists) to hide from discovery. */
@@ -109,7 +138,8 @@ export interface AgentDefinition {
      */
     turnTimeoutMs?: number;
     maxAiCredits?: number; logLevel?: 'error' | 'warning' | 'info' | 'debug';
-    autopilot?: boolean;
+    /** SDK autopilot (experimental): toggle or { continuationEnabled, maxContinues }. */
+    autopilot?: boolean | { continuationEnabled?: boolean; maxContinues?: number };
     clientInfo?: { applicationName?: string; applicationVersion?: string; integrationName?: string; integrationVersion?: string };
   };
   fleet?: {
@@ -120,8 +150,12 @@ export interface AgentDefinition {
 }
 
 export interface LoadResult {
+  /** Portable form: `${ENV_VAR}` refs intact. This is what gets persisted and snapshotted. */
   definition: AgentDefinition;
+  /** Env-expanded, run-ready form (providerApiKey stays a token/ref — resolveApiKey handles it). */
+  resolved: AgentDefinition;
   warnings: string[];
+  /** Hash of the PORTABLE form, so a stored definition and its run snapshot hash identically. */
   definitionHash: string;
 }
 

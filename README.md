@@ -1,784 +1,513 @@
 # Minions Assembler
 
-Define, run, audit, and serve **custom GitHub Copilot agents** from a single versioned JSON file.
+**Assemble, run and audit custom GitHub Copilot agents from versioned JSON — through one npm package, one server and one UI.**
 
-One JSON definition drives three surfaces:
+Minions Assembler turns an agent definition (a small, reviewable JSON file) into a real, auditable coding worker. It gives you a browser cockpit, a REST API, a CLI for CI, and a GitLab pipeline mode — all backed by the same SQLite database, the same agent schema and the same execution engine. It also gives agents a persistent memory: a per-agent dataset, a shared platform dataset, a searchable code graph and a lessons loop that turns run outcomes into better future runs.
 
-| Mode | Command | What you get |
-|---|---|---|
-| **CLI (autonomous / CI)** | `minions-assembler run --agentDefinition ./my-agent.json` | Headless one-shot runs with exit codes for pipelines |
-| **Serve (API + Swagger)** | `minions-assembler serve --port 3100` | REST API, `/docs` Swagger UI, OpenAPI JSON |
-| **Serve (UI)** | browser at `http://127.0.0.1:3100` | **Minions Cockpit** — Chat (with agent picker) · Agents · Runs · New run · Dashboard · Audit & logs · MCP Registry · Settings · API Docs |
+- **One artifact, one UI** — `npm pack` produces a single tarball. `minions-assembler serve` serves the React cockpit, the REST API and Swagger from the same process and port. The old server-rendered `/ui` pages were removed; there is one interface to learn, test and support.
+- **One definition format** — schema v1.0, validated before anything runs.
+- **One audit trail** — every run, tool call, permission decision, token count and memory event is recorded and queryable.
+- **Four ways to work** — browser UI, REST API, CLI and GitLab CI.
 
-Everything persists to SQLite (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`, `providers`, `projects`, `settings`, `approvals`, `metrics_daily`) for reusability, auditing, and traceability — plus structured JSONL audit logs and per-run event files on disk. Built on [`@github/copilot-sdk`](https://docs.github.com/en/copilot/how-tos/copilot-sdk) (TypeScript / Node.js 18+).
+---
 
-## What you get
+## The problem it solves
 
-- **Chat-first agent platform** — pick a project folder, pick an agent (built-in **GitHub Copilot default** or any custom agent), and chat. Streaming markdown responses, per-turn reasoning/tool streams, approval prompts, cancel mid-turn, transcript export.
-- **Custom agents as versioned JSON** — one `AgentDefinition v1.0` file (identity, model/provider, instructions, tools & permissions, MCP, knowledge/workspace, runtime) drives all three surfaces. Advanced users edit JSON directly; everyone else uses the Agents wizard (drafts, AI-aided **Elaborate**, template upload, `.agent.md` import).
-- **BYOK providers** — OpenAI, Anthropic, Azure, OpenRouter, Ollama or any OpenAI-compatible endpoint. Keys are sealed AES-256-GCM (`enc:v1:`) in the SQLite vault and never returned by the API; definitions reference keys by `provider-ref`, `${ENV_VAR}` or sealed token.
-- **Headless runs for CI** — `run` command and `POST /api/agents/:id/runs` / `POST /api/agent-definitions/runs` execute the same runner as chat turns: queued, stoppable, timed out, exit-coded.
-- **Full auditability** — every run (headless **or** chat turn) is a numbered `run_<id>` with `sessionId`/`traceId`/`definition_hash`, a complete ordered event chain (prompt → deltas → tool calls → permission decisions → usage), dual-written to SQLite and per-run `events.jsonl`.
-- **Retention you control** — chat/run history is kept **7 days by default**, configurable 0–3650 days (`Settings → Data & retention` or `PATCH /api/settings`), with pinned-item protection and daily metrics that survive purges.
-- **MCP registry** — register local/remote MCP servers once (`mcp.use` them from any definition), probe tools, allow/deny scoping, OAuth (PKCE) for remote servers.
-- **Operations surface** — Dashboard metrics, structured server logs (`GET /api/logs`), audit filters/export, Swagger (`/docs`), SQLite schema documented below.
+Coding agents are easy to demo and hard to operate. A prompt in a chat box is not a product: it has no version history, no reproducible task definition, no audit trail, no permission model, no way to run in CI, and no memory beyond the current context window.
+
+Minions Assembler makes the agent itself a versioned, testable artifact:
+
+1. **Define** the agent once in JSON — provider, persona, instructions, tools, MCP servers, runtime limits, memory policy and task.
+2. **Validate** it against the bundled schema before spending a token.
+3. **Run** it headlessly from the UI, the API, the CLI or a pipeline.
+4. **Audit** exactly what happened, including which tools ran and which secrets were never exposed.
+5. **Improve** it: memory captures what worked and what failed, and recalls relevant lessons next time.
+
+Typical uses:
+
+- A repository of role agents (full-stack developer, reviewer, designer) that anyone on the team can run.
+- Nightly CI builds where an agent implements a task and the pipeline verifies the generated app.
+- A local cockpit for exploring projects, chatting with an agent and approving sensitive tool calls.
+- A durable record of every agent run for compliance or debugging.
+
+---
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph Surfaces
-    CLI["CLI<br/>minions-assembler"]
-    SPA["Minions Cockpit<br/>React SPA"]
-    API["REST API<br/>Fastify + /docs"]
-  end
-  subgraph Core["src/ (TypeScript)"]
-    HTTP["http/ routes"]
-    RUN["execution/<br/>runner · chat-runner · RunQueue · retention"]
-    AG["agents/<br/>loader · sealing · defaults"]
-    MC["mcp/ registry"]
-    ST["store/ SQLite adapter"]
-  end
-  SDK["@github/copilot-sdk"]
-  DB[("SQLite<br/>data/minion.db")]
-  WS[("run_<id>/ workspaces<br/>+ .audit/events.jsonl")]
-  CLI --> RUN
-  SPA --> API --> HTTP --> RUN
-  HTTP --> AG --> ST
-  RUN --> SDK
-  RUN --> ST --> DB
-  RUN --> WS
-  MC --> RUN
+```
+                    ┌──────────────────────────────────────────────┐
+                    │              minions-assembler               │
+                    │                                              │
+  Browser  ─────────▶  React SPA (dist/web)                       │
+  curl     ─────────▶  Fastify REST API + Swagger (/docs)         │
+  CLI      ─────────▶  same routes, same execution engine           │
+  GitLab   ─────────▶  the installed npm package, run headless     │
+                    │                                              │
+                    │  Agents → validation → execution → audit     │
+                    │         │                    │               │
+                    │         ▼                    ▼               │
+                    │   GitHub Copilot SDK    SQLite (WAL)         │
+                    │   (BYOK provider)       runs · events ·      │
+                    │                         memory · chats       │
+                    │                                              │
+                    │  Workspace: <root>/run_<id>/                 │
+                    └──────────────────────────────────────────────┘
 ```
 
-| Module | Responsibility |
-|---|---|
-| `src/core/` | Shared types (`AgentDefinition` v1.0), definition hash (SHA-256 of the canonical **unsealed** definition, first 16 hex chars) |
-| `src/agents/` | Definition loader/validation (BOM-tolerant), provider-key sealing + `provider-ref` resolution, default-agent wiring |
-| `src/execution/` | `executeRun` (headless) · `executeChatTurn` (chat) · `RunQueue` serialization · run stop/cancel · retention sweep |
-| `src/mcp/` | MCP server registry, probe, tool scoping, OAuth |
-| `src/http/` | Fastify routes: agents, runs, chat, platform (settings/providers/projects/retention/audit), mcp, system; SPA static serving |
-| `src/store/` | SQLite adapter (better-sqlite3) + Postgres-conformant stub |
-| `web/` | React + Vite SPA (Minions Cockpit): Chat, Agents, Runs, Audit, Settings, Dashboard |
-| `dist/` | Compiled output (`tsc -p tsconfig.build.json`); `dist/cli.js` is the npm `bin` |
-
-One runner, three doors: a CLI `run`, an API run, and a chat turn all persist the same `runs`/`events` rows with the same `definition_hash`, so the audit trail is uniform no matter how the agent was invoked.
+- **Composition root** — `src/server.ts` builds one Fastify app, one SQLite connection (plus a memory connection), one run queue, one chat engine and the shared services.
+- **Execution** — `src/execution/runner.ts` runs headless definitions; `chat-runner.ts` runs one chat turn; `chat-engine.ts` manages background turns, approvals and streaming.
+- **Storage** — `src/store/sqlite.ts` owns agents, runs, events, usage, sessions, chats, credentials and MCP registry rows. `src/store/platform.ts` owns providers, projects, settings, approvals and retention. `src/memory/sqlite-store.ts` owns the knowledge graph and datasets in the same database file.
+- **UI** — `web/` is a Vite + React 19 + TypeScript SPA. `npm run build` emits `dist/web`; `src/http/web-static.ts` serves it with SPA fallback. No server-rendered UI ships in the package.
+- **Security** — loopback host allow-list, Origin checks on state-changing requests, optional bearer token, loopback bind by default, encrypted provider credentials and MCP secrets.
 
 ---
 
-## Quick start — chat with Copilot in 2 minutes (UI, no JSON)
+## Quick start (5 minutes, no JSON)
 
-1. **Build & start** (after [Install](#2-install)): `npm run build` then `node dist/cli.js serve --port 3100`, and open <http://127.0.0.1:3100/>.
-2. **Onboarding** — add a model provider (OpenAI, Anthropic, Azure, OpenRouter, Ollama or any OpenAI-compatible endpoint). **Save & test** discovers its models. The API key is sealed with AES-256-GCM and never returned by the API.
-3. **Pick a project** — choose a folder in the sidebar's project switcher (folder browser, path input and recent projects). The agent works inside that folder.
-4. **Chat** — the default **GitHub Copilot** agent is ready immediately. Switch to any custom agent (or `.github/agents/*.md` profile found in the project) from the agent picker in the chat header.
-5. **Build your own agent** — **Agents → New agent** opens the advanced builder (identity, model/provider, instructions, tools & permissions, MCP, knowledge). Once saved it appears in the chat agent picker.
-6. **Audit** — every turn is a numbered run with the full event chain. **Audit** lists/filters/exports runs; **Settings → Data & retention** controls how long history is kept (default 7 days).
-Prefer JSON from the start? Skip to [§7](#7-agent-definition-json-schema-v10) — the wizard writes exactly that file.
+Prerequisites: **Node.js 22.12+**, npm 10+. Java 17+ and Maven are only needed when an agent builds a Java project.
+
+```bash
+# 1. Install the package globally (or use npx)
+npm install -g minions-assembler
+
+# 2. Start the cockpit
+minions-assembler serve --port 3100
+
+# 3. Open the app
+#    http://127.0.0.1:3100
+```
+
+On first launch:
+
+1. **Settings → Providers** (or onboarding) → add a provider: a name, base URL, model and API key. The key is sealed in the encrypted credential vault and never returned by the API.
+2. Pick **No project** for a folder-less chat, or open a project folder. The agent works inside that folder.
+3. Choose an agent in the chat header and type a message. The default agent is the built-in GitHub Copilot agent.
+4. For a one-off headless task, open **New run**, choose a registered agent or paste a definition, paste the task, and press **Start run**.
+
+The server binds `127.0.0.1` by default. See [Security](#security-and-operations) before exposing it.
 
 ---
 
-## 1. Prerequisites
+## One artifact: the npm package
 
-| Requirement | Notes |
-|---|---|
-| Node.js **18+** (tested on 24) | Check with `node --version` |
-| npm 9+ | Ships with Node |
-| A BYOK LLM credential | Any OpenAI-compatible endpoint (OpenAI, Mimo, vLLM, LiteLLM, Ollama, …), Azure OpenAI, or Anthropic. **No GitHub Copilot subscription is needed** — BYOK bypasses GitHub auth. |
-| Windows / macOS / Linux | All paths cross-platform |
+The package is designed to be published and installed as one unit:
 
-> **Credentials.** `provider.providerApiKey` is the fixed attribute. It accepts an encrypted `enc:v1:…` token (AES-256-GCM, master key at `data/.master-key`), a `${ENV_VAR}` reference, or a literal. The UI saves keys encrypted into SQLite (`credentials` / sealed `providerApiKey`); plaintext never lands in definition JSON, logs, transcripts, or the audit trail — anything matching `key|token|secret|password` is scrubbed.
+```bash
+npm pack                      # builds dist/ + dist/web, then creates the tarball
+npm install -g ./minions-assembler-1.0.0.tgz
+minions-assembler --version    # 1.0.0
+minions-assembler serve        # SPA + API + Swagger + legacy UI, one port
+```
+
+What `serve` exposes on a single origin:
+
+| Path | What it is |
+| --- | --- |
+| `/` and SPA routes (`/chat`, `/agents`, `/runs`, `/dashboard`, `/settings`, …) | React cockpit |
+| `/api/**` | REST API (see below) |
+| `/docs` | Swagger UI |
+| `/openapi.json` | OpenAPI document |
+
+The tarball contains `dist/`, the bundled web build (`dist/web`) and one example agent (`examples/full-stack-engineer.agent.json`). It does **not** contain tests, source, data, runs or local evidence. `prepack` runs the full build automatically, so `npm pack` always ships a matching UI.
 
 ---
 
-## 2. Install
+## The cockpit UI
+
+The React app is organised around the work, not around CRUD tables:
+
+- **Chat** — streaming replies, reasoning blocks, tool cards, inline approvals, Stop, model and agent pickers, project-aware workspace, thread pin/archive/rename/export.
+- **Agents** — list, inspect, duplicate, edit and delete; the builder supports guided sections and a raw JSON view, validation, import/upload, drafts and test runs.
+- **Runs** — explorer with filters, run detail with KPIs, event timeline, streamed chunks, definition snapshot, live stop, and links back to the chat thread.
+- **Dashboard** — requests, success rate, tokens, credits, runs by model and a 24-hour timeline.
+- **MCP registry** — add local/stdio/HTTP/SSE servers, probe tools, seal secrets, diagnose failures, delete.
+- **Audit & logs** — search runs, inspect the event chain, download a bundle, view server logs.
+- **Settings** — providers, defaults, chat approval mode, retention, audit level, onboarding.
+- **API docs** — a readable tour of the endpoints with copy-paste examples.
+
+Keyboard: `⌘K` / `Ctrl+K` opens the command palette. The layout is responsive down to phone width.
+
+---
+
+## The REST API
+
+Every UI action is a public API call. The same endpoints work with `curl`, a script or another service. Interactive docs: `http://127.0.0.1:3100/docs`.
+
+### Run an agent
 
 ```bash
-npm install
-npm run build        # compiles TypeScript to flat dist/ (dist/cli.js, …)
+# Register a definition
+curl -sS -X POST http://127.0.0.1:3100/api/agents \
+  -H 'content-type: application/json' \
+  -d '{"definitionPath":"./examples/full-stack-developer.agent.json"}'
+
+# Execute it (blocks until the turn finishes)
+curl -sS -X POST 'http://127.0.0.1:3100/api/agents/full-stack-developer%401.0.0/runs' \
+  -H 'content-type: application/json' \
+  -d '{"taskOverride":"Build the feature described in TASK.md","approvalMode":"autopilot","turnTimeoutMs":7200000}'
 ```
 
-| # | Launch path | Command | Best for |
-|---|---|---|---|
-| A | Compiled | `node dist/cli.js <cmd>` | Production / CI |
-| B | Dev (tsx) | `npx tsx src/cli.ts <cmd>` | Iterating on source, no rebuild |
-| C | Global bin | `npm link` once, then `minions-assembler <cmd>` | Daily use; undo with `npm uninstall -g minions-assembler` |
+The response is `{ runId, sessionId, traceId, text }`. The full event chain is available at `GET /api/runs/:id/events`.
 
-Smoke-check:
+### Inline definition (no registration)
 
 ```bash
-node dist/cli.js --help        # shows: validate | run | import-md | mcp | mcp-list | serve | list | show | history | chat
-node dist/cli.js validate --agentDefinition ./examples/expense-tracker-dev.agent.json
-# -> valid: expense-tracker-dev@1.0.0 (hash …)
+curl -sS -X POST http://127.0.0.1:3100/api/agent-definitions/runs \
+  -H 'content-type: application/json' \
+  -d '{"definition": { ... }, "taskOverride": "Reply with exactly: OK"}'
+```
+
+The definition is validated, sealed and snapshotted onto the run.
+
+### Chat
+
+```bash
+# Create a thread (no agentId = built-in Copilot agent)
+curl -sS -X POST http://127.0.0.1:3100/api/chat/threads \
+  -H 'content-type: application/json' -d '{"title":"My chat"}'
+
+# Send a message (returns 202 immediately)
+curl -sS -X POST http://127.0.0.1:3100/api/chat/threads/<threadId>/messages \
+  -H 'content-type: application/json' -d '{"content":"Explain this repository"}'
+
+# Follow the typed SSE stream
+curl -N http://127.0.0.1:3100/api/chat/threads/<threadId>/events
+```
+
+### Everything else
+
+| Group | Endpoints |
+| --- | --- |
+| System | `GET /api/status`, `/api/bootstrap`, `/api/logs`, `/api/metrics`, `/api/metrics/daily` |
+| Agents | `GET/POST /api/agents`, `GET/PUT/DELETE /api/agents/:id`, `POST /api/agents/validate`, `POST /api/agents/import`, `GET /api/agents/:id/definition`, drafts, Elaborate, templates |
+| Runs | `POST /api/agents/:id/runs`, `POST /api/agent-definitions/runs`, `GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/definition`, `GET /api/runs/:id/events`, `POST /api/runs/:id/stop` |
+| Chat | `GET/POST /api/chat/threads`, `GET/PATCH/DELETE /api/chat/threads/:id`, `POST .../messages`, `POST .../cancel`, `GET .../events`, `GET .../stream`, `GET .../export` |
+| Platform | `GET/POST /api/providers`, `GET/PATCH/DELETE /api/providers/:id`, `POST /api/providers/:id/default`, `POST /api/providers/:id/test`, `GET/POST /api/projects`, `GET /api/settings`, `PUT /api/settings`, `GET /api/approvals`, `POST /api/approvals/:id`, `GET/PUT /api/retention` |
+| MCP | `GET/POST /api/mcp`, `GET/DELETE /api/mcp/:name`, `POST /api/mcp/probe`, `POST /api/mcp/:name/tools`, OAuth start/callback/status |
+| Memory | `GET/PUT /api/memory/config`, `GET /api/memory/stats`, `/datasets`, `/graph`, `/nodes`, `/nodes/:id`, `/episodes`, `/search`, `/lessons`, `POST /api/memory/index`, `/improve`, `/forget`, `/promote`, `/feedback` |
+
+All errors are `{ "error": "…" }`. Validation failures add `fieldErrors`.
+
+---
+
+## The CLI
+
+```bash
+minions-assembler --help
+```
+
+### Validate
+
+```bash
+minions-assembler validate --agentDefinition ./my-agent.json
+# -> valid: my-agent@1.0.0 (hash 91c2324af5158405)
+# exit 0; 2 on schema/rule failure
+```
+
+### Run headlessly
+
+```bash
+MIMO_API_KEY=... minions-assembler run \
+  --agentDefinition ./my-agent.json \
+  --task "Build the service described in TASK.md" \
+  --yes --no-stream --output-format json \
+  --db ./data/minion.db
+```
+
+Useful flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--task <text>` | One-off task override |
+| `--runDir <path>` | Explicit working directory (default `<workspace>/run_<id>`); useful for phase builds and resuming a folder |
+| `--yes` | CI approval for approve-all policies (alias of `--approval autopilot`) |
+| `--approval autopilot\|strict` | How `ask` decisions are answered in headless runs |
+| `--no-stream` | Disable streamed deltas |
+| `--output-format json` | Machine-readable result (`runId`, `sessionId`, `traceId`, `status`, `durationMs`, `text`) |
+| `--audit-level minimal\|default\|full` | Audit verbosity |
+| `--sessionId <id>` / `--resume` | Pin or resume an SDK session |
+| `--share <path>` | Write a Markdown transcript |
+| `--db <path>` | SQLite path (default `./data/minion.db`) |
+
+Exit codes: **0** done · **2** validation · **3** runtime/provider · **4** permission.
+
+### Chat from the terminal
+
+```bash
+minions-assembler chat send --agent my-agent@1.0.0 --thread <id> --content "Review the diff"
+```
+
+### Memory
+
+```bash
+minions-assembler memory stats
+minions-assembler memory search "flaky maven test"
+minions-assembler memory lesson --text "Run mvn -q -B test before packaging" --trigger "maven package"
+minions-assembler memory improve --dataset agent:full-stack-developer
+```
+
+### Serve
+
+```bash
+minions-assembler serve --port 3100 --db ./data/minion.db
 ```
 
 ---
 
-## 3. Configure credentials
+## GitLab CI mode
 
-**Recommended (UI):** open the Define wizard → Provider step → paste the key into the **providerApiKey** password field. It is sealed with AES-256-GCM and stored as an `enc:v1:` token. The raw key is never written to disk or logs.
+GitLab mode is not another server: it is the same npm artifact, installed globally inside a job and driven headlessly. The repository ships a working pipeline in [`.gitlab-ci.yml`](.gitlab-ci.yml):
 
-**Environment variable (CLI / CI):** reference it from the definition as `"providerApiKey": "${MIMO_API_KEY}"` (the name the bundled examples use):
+| Stage | Job | What it proves |
+| --- | --- | --- |
+| `package` | `package` | `npm ci`, both typechecks, both test suites and `npm pack`; asserts the tarball contains `dist/web/index.html` and the example, and that no legacy `/ui` module leaked. Stores the `.tgz` as an artifact. |
+| `generate` | `generate_backend` | Installs that exact tarball, Maven + JDK 17, validates the definition and runs Phase A ([`ci/tasks/backend.md`](ci/tasks/backend.md)) with `--runDir app`. |
+| `generate` | `generate_frontend` | Runs Phase B ([`ci/tasks/frontend.md`](ci/tasks/frontend.md)) into the same `app/` workspace after Phase A. |
+| `verify` | `app_check` | Boots the generated Spring Boot jar and the generated Next.js production build, then [`ci/verify-app.mjs`](ci/verify-app.mjs) drives catalog, cart, checkout and admin flows in Chromium and writes `reports/`. |
+| `cockpit` | `cockpit_check` | Installs the same tarball, serves the cockpit, asserts `/ui/**` is 404 and runs [`ci/cockpit-smoke.mjs`](ci/cockpit-smoke.mjs) through Chromium. |
 
-```bash
-export MIMO_API_KEY='your-key-here'            # bash / git-bash
-$env:MIMO_API_KEY = 'your-key-here'            # PowerShell
-set MIMO_API_KEY=your-key-here                 # CMD
+Requirements:
+
+- A masked CI variable `MIMO_API_KEY` (or whatever key your definition references).
+- The `package` job is the only place that builds the artifact; every later job installs `./minions-assembler-1.0.0.tgz`. Never rebuild per job.
+- The runner needs Docker, disk for Maven/npm and a Chromium download. `playwright-core` is already a dev dependency; CI installs Chromium with `npx playwright install --with-deps chromium`.
+- This is the same four-mode contract as local use: UI, API, CLI and pipeline all execute one artifact.
+
+Minimal standalone job, if you only want the agent (no verification):
+
+```yaml
+agent:
+  image: node:22-bookworm
+  timeout: 2h
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq maven openjdk-17-jdk-headless
+    - npm install -g ./minions-assembler-1.0.0.tgz
+  script:
+    - minions-assembler validate --agentDefinition examples/full-stack-engineer.agent.json
+    - minions-assembler run --agentDefinition examples/full-stack-engineer.agent.json
+        --task "$(cat task.md)" --runDir ./app --yes --no-stream --output-format json
+        --db ./data/minion.db | tee reports/run.json
+  artifacts:
+    when: always
+    paths: [app/, reports/]
 ```
 
-Or a **`.env` file** in the project root (git-ignored) — the CLI loads it via `dotenv`:
+`--yes`, `--no-stream` and `--output-format json` make the run non-interactive and machine-readable; `--runDir` lets a later job reuse the same tree.
 
-```ini
-MIMO_API_KEY=your-key-here
-```
+## Agent definitions (schema v1.0)
 
-Missing credential → `validate` warns; `run` fails fast (exit 3).
-
----
-
-## 4. Server mode + UI
-
-### 4.1 Start
-
-```bash
-node dist/cli.js serve --port 3100 --db ./data/minion.db
-# -> minions-assembler serve on http://127.0.0.1:3100 (docs: /docs)
-```
-
-On startup the adapter creates `data/` if missing and opens `data/minion.db` — **the platform tables** (`agents`, `runs`, `events`, `usage`, `transcripts`, `mcp_servers`, `sessions`, `credentials`, `chat_threads`, `chat_messages`) in **WAL mode** for concurrency-safe reads while runs write. A custom `--db path` gets its parent folder auto-created the same way.
-
-Loopback-only (`127.0.0.1`). Export `MIMO_API_KEY` in the same shell so API-triggered runs can resolve credentials.
-
-### 4.2 Workspace & audit logs
-
-The **agent workspace** (where agents read/write files and where per-run transcripts go) is configurable, resolved in this order:
-
-1. **Definition override** — `knowledge.workingDirectory` inside an agent definition
-2. **`MINION_WORKSPACE` env var** — set per serve/CLI invocation: `MINION_WORKSPACE=D:/agent-workspaces minions-assembler serve`
-3. **Process current directory** (project root default)
-
-```bash
-MINION_WORKSPACE=D:/agent-workspaces MIMO_API_KEY=… node dist/cli.js serve --port 3100
-# run transcript events then land in D:/agent-workspaces/<runId>/.audit/events.jsonl
-# server audit log lands in  D:/agent-workspaces/.minion/server.log.jsonl
-```
-
-Structured **JSONL audit log** (`.minion/server.log.jsonl`, secrets scrubbed): one record per HTTP request (method, url, status, duration ms) plus server lifecycle events. Filter with `GET /api/logs`: `?level=error`, `?event=http.request`, `?limit=N` (≤1000, newest last). The Dashboard also renders the latest entries inline with an "Errors only" toggle.
-
-**Audit verbosity — `AUDIT_LEVEL` env or `--audit-level <level>` CLI flag / `auditLevel` run-body field.** Controls how much of the agent's history each run records (both to the per-run `events.jsonl` transcript and the SQLite `events` table):
-
-| Level | Records |
-|---|---|
-| `minimal` | Run lifecycle only: `run.start` (definition snapshot, workspace), `prompt.send`, `session.create`/`resume`, `assistant.message`, `run.complete`/`run.error` |
-| `default` | + **tool calls** (`tool.call` — tool name + full arguments), **tool results** (`tool.result` — output, success flag, error), **permission requests/decisions** (`permission.request`, `permission.decision`), hook lifecycle (`hook.start`/`hook.end`), turns, usage |
-| `full` | + assistant **reasoning** (`assistant.reasoning`), streaming deltas (`assistant.message_delta`), tool partial results/progress, session errors — the complete request/response trace |
-
-```bash
-AUDIT_LEVEL=full node dist/cli.js run --agentDefinition examples/expense-tracker-dev.agent.json
-# or per request:  curl -X POST .../api/agents/expense-tracker-dev%401.0.0/runs -d '{"auditLevel":"full"}'
-```
-
-### 4.3 Web app — **Minions Cockpit**
-
-The server serves a React single-page app at `/` (built to `dist/web` by `npm run build`; for development run `npm run dev:web` — Vite proxies `/api` to `127.0.0.1:3100`). The sidebar is split into **Chat** (project switcher, searchable/pinned/archived threads), **Execution** (Agents, Runs, New run) and **Operations** (Dashboard, MCP, Audit, API docs), with Settings and a light/dark toggle at the bottom. `Ctrl+K` opens the command palette.
-
-| Route | Page |
-|---|---|
-| `/chat`, `/chat/:threadId` | Chat — project + agent picker, streaming markdown, reasoning and tool-call cards, interactive approvals (allow once / this chat / this project / deny), stop, export |
-| `/agents`, `/agents/new`, `/agents/:id/edit` | Agent library and the advanced agent builder |
-| `/runs`, `/runs/new`, `/runs/:id` | Headless runs and the colour-coded event timeline |
-| `/dashboard`, `/mcp`, `/audit`, `/developers` | Metrics, MCP registry, audit explorer / export, API docs (embeds Swagger at `/docs`) |
-| `/settings` | Providers, defaults, approval mode, data retention, about |
-
-The previous server-rendered UI is still available under `/ui/*` for one more release and will be removed afterwards. `/docs` (Swagger) and `/openapi.json` are unchanged.
-
-#### Approvals, security and retention
-
-- **Approval modes** (per chat, default in Settings): *Ask me* (interactive cards, auto-deny on timeout), *Autopilot* (auto-approve; the destructive-command gate still applies) and *Read-only/strict* (deny anything that needs approval). Decisions are stored in `approvals` and shown in the audit trail.
-- **Headless**: `run --approval autopilot|strict` (`--yes` is an alias for autopilot) and `"approvalMode"` in the run API bodies.
-- **Retention**: chats, runs, events and approvals older than *N* days (default **7**, configurable up to 3650; `0` keeps everything; pinned threads can be exempt) are purged by an hourly sweep, with daily totals kept in `metrics_daily`. Run it on demand with `POST /api/retention/purge`.
-- **Network guard**: Host/Origin checks protect the local API against DNS-rebinding and cross-site requests. Environment: `MINION_ALLOWED_HOSTS` (comma-separated extra hostnames), `MINION_API_TOKEN` (bearer token for API clients — it blocks the browser app, so use it only for headless/API deployments), `MINION_CHAT_CONCURRENCY` (parallel chat turns, default 3).
-
-Legacy page reference (`/ui/*`): Dashboard · Agents (wizard, quick-create, import/export) · Chat · Runs · Run detail · MCP registry.
-### 4.4 Stop / troubleshoot
-
-`Ctrl+C` in its terminal. If backgrounded on Windows, map port→PID: `netstat -ano | findstr :3100`, then `taskkill /F /PID <pid>`. On macOS/Linux: `lsof -i :3100` → `kill <pid>`.
-
-| Symptom | Fix |
-|---|---|
-| `EADDRINUSE` | Another process holds the port — see §4.3 or use `--port 3101`. |
-| `Cannot find module …/dist/cli.js` | `npm run build` first (flat output root — no `dist/src/`). |
-| API run → 500 `Missing credential` | Restart serve with the env var exported (or add `.env`). |
-| Swagger renders but examples missing on "Try it out" | Old build — rebuild + restart. |
-
----
-
-## 5. API reference (all endpoints, payloads, statuses)
-
-Base URL: `http://127.0.0.1:3100`. Agent ids are `name@version` → URL-encode `@` as `%40`. All request/response bodies are JSON. Also browseable interactively at `/docs`.
-
-### GET /api/status — server health
-```bash
-curl -s http://127.0.0.1:3100/api/status
-```
-```jsonc
-// 200
-{ "name": "minions-assembler", "version": "1.0.0", "sdk": "@github/copilot-sdk", "db": "./data/minion.db", "uptime": 42.5 }
-```
-Statuses: `200` always.
-
-### POST /api/agents — validate + register a definition
-Body must contain **either** `definitionPath` (server-side file path) **or** `definition` (inline object) — not both.
-```bash
-curl -s -X POST http://127.0.0.1:3100/api/agents \
-  -H 'Content-Type: application/json' \
-  -d '{"definitionPath":"./examples/expense-tracker-dev.agent.json"}'
-```
-```jsonc
-// 200 — registered (literal providerApiKey sealed to an enc:v1: token; never a raw key)
-{ "id": "expense-tracker-dev@1.0.0", "hash": "4d7ee2e206e150bf", "warnings": [], "definition": { "...redacted..." } }
-// 400 — invalid JSON / schema failure / both-or-neither sources
-{ "error": "Schema validation failed: /metadata must have required property 'version'" }
-{ "error": "Provide either definitionPath or definition, not both" }
-```
-Warning example (non-fatal): `"provider.providerApiKey is missing — runs will fail to resolve an API key"`.
-Statuses: `200` · `400` · (Fastify `404` only if route itself mismatches).
-
-### POST /api/agents/validate — dry-run validation (no save)
-Used by the UI editor; same rules as above.
-```bash
-curl -s -X POST http://127.0.0.1:3100/api/agents/validate \
-  -H 'Content-Type: application/json' \
-  -d '{"definition":{"schemaVersion":"1.0","metadata":{"name":"x","version":"1"},"persona":{"systemMessage":{"content":"hi"}},"task":{"prompt":"t"},"provider":{"type":"openai","baseUrl":"u","model":"m","providerApiKey":"${MIMO_API_KEY}"}}}'
-```
-```jsonc
-// 200
-{ "valid": true, "hash": "5a55ef673528aefe", "warnings": [] }
-// 400
-{ "error": "Schema validation failed: / must have required property 'persona'; …" }
-```
-Statuses: `200` · `400`.
-
-### GET /api/agents — list registered agents
-```jsonc
-// 200
-{ "agents": [ { "id": "expense-tracker-dev@1.0.0", "name": "expense-tracker-dev", "version": "1.0.0", "created_at": "2026-10-11T13:23:16.580Z" } ] }
-```
-Statuses: `200` (empty registry → `"agents": []`).
-
-### GET /api/agents/:id — inspect one agent
-```bash
-curl -s http://127.0.0.1:3100/api/agents/expense-tracker-dev%401.0.0
-```
-```jsonc
-// 200
-{ "id": "expense-tracker-dev@1.0.0", "name": "expense-tracker-dev", "version": "1.0.0",
-  "definition_json": "{\"schemaVersion\":\"1.0\",…}", "definition": { ...object... } }
-// 404
-{ "error": "agent not found: nope@1.0.0" }
-```
-Statuses: `200` · `404`.
-
-### POST /api/agents/:id/runs — run an agent synchronously
-Executes via the SDK (`sendAndWait`); returns when the turn finishes. `taskOverride` (optional) replaces the definition's `task.prompt`. The provider credential must be in the server env.
-```bash
-curl -s -X POST http://127.0.0.1:3100/api/agents/expense-tracker-dev%401.0.0/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"taskOverride":"Reply with exactly: SERVE-API-OK"}'
-```
-```jsonc
-// 200 — verified live: {"runId":"run_a5303917", ...,"text":"UI-RUN-OK"}
-{ "runId": "run_a5303917", "sessionId": "sess_mv42pj5n_hkx53a", "traceId": "tr_mv42pj5n_omwglj7m", "text": "UI-RUN-OK" }
-// 404
-{ "error": "agent not found: nope@1.0.0" }
-// 500 — runtime failure (details also persisted as run.error + run status 'failed')
-{ "error": "Missing credential: env MIMO_API_KEY is not set (BYOK keys are never stored in JSON or DB)" }
-```
-Statuses: `200` · `404` · `500`.
-
-### GET /api/runs — list recent runs (max 100, filter `?agentId=`)
-```jsonc
-// 200 (each row): id, agent_id, session_id, trace_id, status, model, provider_type, task_prompt, definition_hash, created_at, finished_at, error
-{ "runs": [ { "id": "run_a5303917", "status": "done", "trace_id": "tr_…", "model": "mimo-v2.6-flash", "...": "…" } ] }
-```
-Statuses: `200` (`status` ∈ queued|running|idle|aborted|failed|done).
-
-### GET /api/runs/:id — one run row
-```jsonc
-// 200 — full row as above
-// 404  { "error": "run not found: run_unknown" }
-```
-Statuses: `200` · `404`.
-
-### POST /api/runs/:id/stop — abort a live headless run
-Signals the runner's active executor to stop (`abortRun`). Unknown run → `404`; a run that is not currently executing returns `{ "stopped": false }` without error.
-```jsonc
-// 200  { "runId": "run_a5303917", "stopped": true }
-```
-Statuses: `200` · `404`.
-
-### GET /api/runs/:id/events — ordered audit events (pollable)
-`?afterSeq=N` returns only events with seq > N (incremental polling; `0`/omitted = all).
-```bash
-curl -s "http://127.0.0.1:3100/api/runs/run_a5303917/events?afterSeq=0"
-```
-```jsonc
-// 200 — verified live (11 events in one turn):
-{ "run": { "id": "run_a5303917", "status": "done", "...": "…" },
-  "events": [
-    { "seq": 1, "type": "run.start",             "payload_json": "{…}", "persisted": 1, "at": "2026-10-11T20:…" },
-    { "seq": 2, "type": "session.create",        "payload_json": "{…}", "persisted": 1, "at": "…" },
-    { "seq": 3, "type": "prompt.send",           "payload_json": "{\"prompt\":\"…\",\"mode\":\"enqueue\"}", "persisted": 1, "at": "…" },
-    { "seq": 4, "type": "assistant.turn_start",  "payload_json": "{}",  "persisted": 1, "at": "…" },
-    { "seq": 5, "type": "assistant.message_delta","payload_json": "{…}", "persisted": 0, "at": "…" },
-    { "seq": 6, "type": "assistant.usage",       "payload_json": "{…}", "persisted": 1, "at": "…" },
-    { "seq": 7, "type": "assistant.message",     "payload_json": "{…}", "persisted": 1, "at": "…" },
-    { "seq": 8, "type": "assistant.turn_end",    "payload_json": "{}",  "persisted": 1, "at": "…" },
-    { "seq": 9, "type": "session.idle",          "payload_json": "{}",  "persisted": 0, "at": "…" },
-    { "seq": 10,"type": "run.complete",          "payload_json": "{…}", "persisted": 1, "at": "…" }
-  ] }
-// failure runs additionally carry run.error; failed run rows have status "failed"
-// 404  { "error": "run not found: run_unknown" }
-```
-Statuses: `200` · `404`.
-
-### GET /api/runs/:id/stream — SSE replay
-Replays all persisted events as `data: {"seq":n,"type":"…"}`, then `data: {"done":true}` and closes.
-Statuses: `200` (Content-Type `text/event-stream`) · `404`.
-
-### GET /api/sessions — list SDK sessions (audit)
-Every SDK session with its run, agent, trace id, status, and final summary:
-```jsonc
-// 200 — verified live
-{ "sessions": [ { "session_id": "sess_mv47z5dr_yyz0hn", "run_id": "run_6c016a45", "agent_id": "expense-tracker-dev@1.0.0", "trace_id": "tr_mv47z5dq_zfxoe0ol", "status": "idle-done", "summary": "Created `out/expense-tracker.html" — …", "created_at": "…", "updated_at": "…" } ] }
-```
-Statuses: `200` (empty → `"sessions": []`). No response schema: summaries are free-form.
-
-### GET /api/sessions/:sid — inspect one SDK session
-```jsonc
-// 200 — single row as above
-// 404  { "error": "session not found: sess_none" }
-```
-Statuses: `200` · `404`.
-
-### GET /api/templates/default — working fixture template
-The bundled example definition (redacted), used by the UI's "load working template" button.
-```jsonc
-// 200 — the expense-tracker-dev definition object (the bundled examples/ template)
-// 404  { "error": "fixture template not found" }
-```
-Statuses: `200` · `404`.
-
-### GET /api/metrics — dashboard metrics
-Aggregates used by the Dashboard. `byStatus` counts by run status; `byRuns` ranks agents by run count; `recentRuns` is the latest 8.
-```jsonc
-// 200 — verified live
-{ "agents": { "total": 1, "latest": "expense-tracker-dev@1.0.0", "byRuns": [{ "id": "expense-tracker-dev@1.0.0", "runs": 2 }] },
-  "runs": { "total": 2, "last24h": 2, "finished": 2, "succeeded": 1, "byStatus": { "done": 1, "failed": 1 } },
-  "usage": { "tokensIn": null, "tokensOut": null, "credits": null, "avgDurationMs": 1997, "rows": 1 },
-  "mcp": { "total": 0 },
-  "recentRuns": [ { "id": "run_…", "agent_id": "…", "status": "done", "model": "…", "created_at": "…" } ] }
-```
-Statuses: `200`.
-
-### GET /api/logs — structured audit logs (JSONL)
-Reads the server audit log with optional filters.
-```bash
-curl -s "http://127.0.0.1:3100/api/logs?level=error&limit=50"
-```
-```jsonc
-// 200 — verified live
-{ "file": "D:/…/.minion/server.log.jsonl", "count": 3,
-  "entries": [
-    { "ts": "2026-10-13T00:47:…", "level": "info",  "event": "server.start",   "pid": 12345, "db": "./data/minion.db", "workspace": "…", "workspaceSource": "cwd" },
-    { "ts": "…", "level": "audit", "event": "http.request", "pid": 12345, "method": "GET",  "url": "/api/status", "statusCode": 200, "ms": 2 }
-  ] }
-```
-Query params: `level` ∈ info|warn|error|audit · `event` (substring) · `limit` ≤ 1000 (newest last). Every entry is also on disk, scrubbed of secret-looking values.
-Statuses: `200`.
-
----
-
-### Chat threads (web app + CLI `chat` commands)
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/chat/agents?projectId=` | Selectable agents: the built-in default (`copilot-default@builtin`), registered custom agents and the project's `.github/agents` profiles. |
-| `POST /api/chat/threads` | `{ agentId?, projectId?, model?, title? }` → new thread (defaults to the default agent). |
-| `GET /api/chat/threads` | `?agentId&projectId&q&archived` — newest first, pinned first. |
-| `GET /api/chat/threads/:id` | Thread + ordered `messages`, `pendingApprovals` and `busy`. |
-| `PATCH /api/chat/threads/:id` | `title, pinned, archived, agentId, projectId, model, approvalMode` (409 while a turn is running; an agent switch inserts a divider message and starts a fresh SDK session). |
-| `POST /api/chat/threads/:id/messages` | `{ content }` → **202** and the turn streams over SSE; `?wait=true` blocks and returns `{ userMessageId, replyMessageId, runId, agentId, text }`. 412 no provider configured, 409 turn already running, 502 turn failed. |
-| `POST /api/chat/threads/:id/cancel` | Stop the running turn. |
-| `GET /api/chat/threads/:id/events` | Typed SSE (`turn-start, delta, reasoning, tool-start, tool-complete, approval-request, approval-resolved, usage, done, error, cancelled`) with `Last-Event-ID` resume and a `ready` event. |
-| `GET /api/chat/threads/:id/export?format=md\|json` | Download a transcript. |
-| `DELETE /api/chat/threads/:id` | Remove the thread and its transcript. |
-| `POST /api/approvals/:id` | `{ allow, scope: once\|chat\|project }` — answer an approval request; `GET /api/approvals` lists them. |
-
-Platform endpoints: `/api/bootstrap`, `/api/settings` (GET/PATCH), `/api/providers` (+ `/:id/default`, `/:id/test`, `/:id/models`), `/api/projects` (+ `/:id/agents`), `/api/fs/browse`, `/api/retention` (+ `POST /purge`), `/api/metrics/daily`, `/api/audit/runs` (filters `source, status, agentId, projectId, threadId, q, limit, offset`) and `/api/audit/runs/:id/export`. All are documented in Swagger (`/docs`, tag `platform`).
-
-Chat turns are ordinary runs: each creates a `run_<id>` row (visible in **Runs** and `GET /api/runs/:id/events`) with the full audit chain. Agents that declare `knowledge.workingDirectory` operate inside that workspace; otherwise the thread's project folder is used (or a per-thread `.chats/<threadId>` folder when no project is selected).
-### Utility endpoints (credentials, providers, persona, inline runs)
-
-| Endpoint | Purpose |
-|---|---|
-| `GET/POST /api/credentials`, `DELETE /api/credentials/:name` | Named credentials vault — values are sealed AES-256-GCM (`enc:v1:`) at rest; responses never return plaintext. |
-| `GET /api/providers/models` · `POST /api/providers/test` | Known provider presets · connectivity-test a provider + key before saving. |
-| `GET /api/persona/default-system-prompt` | The SDK-managed default Copilot system prompt (what `persona.useCopilotDefaultPrompt: true` rides on). |
-| `POST /api/agent-definitions/runs` | Run a pasted definition without registering it — `{ definition, taskOverride?, auditLevel?, approvalMode? }` → same run shape as `POST /api/agents/:id/runs`. |
-| `GET /api/agents/drafts` · `POST /api/agents/draft` | Wizard draft storage (save/resume in-progress definitions). |
-| `POST /api/agents/elaborate` | AI-aided persona/task elaboration (§7 Elaborate). |
-| `POST /api/agents/import` · `POST /api/agents/validate` | Import a `.agent.md` markdown profile (frontmatter + prompt body) · dry-run validation. |
-| `GET /api/workspace/instruction-files` | Scan a workspace for `AGENTS.md` / `copilot-instructions.md` (wizard persona step). |
-| `GET /api/builtin-tools` | Curated built-in CLI tool registry for the wizard's tools grid. |
-| `GET /api/templates/default` · `POST /api/templates/upload` | Bundled working example template · upload a definition as the new template. |
-
-## 5b. MCP server registry — endpoints, payloads, statuses
-
-MCP servers are registered once and referenced by name from any definition via `mcp.use`. The registry lives in the same SQLite file (`mcp_servers` table).
-
-### How agents reference registered servers
-```jsonc
-// in an agent definition:
-"mcp": {
-  "use": [ "inventory-echo" ]                                  // full: all discovered/stored tools
-  // or scoped: { "name": "inventory-echo", "allow": ["echo"], "deny": [], "disabled": false }
-  // inline servers (not from the registry) remain supported:
-  "servers": { "my-local": { "type": "local", "command": "node", "args": ["./x.mjs"] } }
-}
-```
-At run time the runner expands `mcp.use` against the registry, filters tools per `allow`/`deny`, and injects the concrete server configs into the SDK session — recorded in the audit trail as an `mcp.expand` event. Unknown names fail the run fast: *`MCP server 'x' not found in registry — register it first via POST /api/mcp …`*.
-
-### POST /api/mcp — register / update an MCP server
-```bash
-curl -s -X POST http://127.0.0.1:3100/api/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "name": "inventory-echo",
-        "description": "Echo test server",
-        "config": { "type": "local", "command": "node", "args": ["./my-mcp-servers/echo.mjs"], "tools": ["*"] },
-        "probe": true
-      }'
-```
-```jsonc
-// 200 — verified live
-{ "name": "inventory-echo", "status": "registered (tools discovered: 1)", "config": { "type": "local", "command": "node", "args": ["./my-mcp-servers/echo.mjs"], "tools": ["*"] }, "tools": [ { "name": "echo" } ] }
-// 400
-{ "error": "type must be 'local'|'stdio'|'http'|'sse'" }
-{ "error": "http/sse servers require 'url'" }
-{ "error": "spawn failed: spawn definitely-not-a-real-cmd-xyz ENOENT" }   // probe:true with a bad command
-```
-Notes: `local`/`stdio` need `command`; `http`/`sse` need a valid `url`. `env`/`headers` accept `${ENV_VAR}` references only (literal secrets are rejected by the loader warning + redaction). `probe:true` connects now (stdio JSON-RPC handshake or HTTP `initialize`+`tools/list`) and stores the tool list; re-registering without `probe` keeps previously stored tools. Upsert on `name`.
-Statuses: `200` · `400`.
-
-### POST /api/mcp/probe — dry-run tool discovery (not persisted)
-Used by the UI for live preview while editing a config.
-```jsonc
-// 200  { "count": 1, "tools": [ { "name": "echo", "description": "Echo back the provided text (test tool)", "inputSchema": { … } } ] }
-// 400  { "error": "timed out after 10000ms waiting for tools/list" }
-```
-Statuses: `200` · `400`.
-
-### GET /api/mcp — list registered servers
-```jsonc
-// 200
-{ "servers": [ { "name": "inventory-echo", "description": "Echo test server", "tools_json": "[…JSON tool list…]", "created_at": "2026-10-11T17:55:09.639Z" } ] }
-```
-Statuses: `200` (empty registry → `"servers": []`).
-
-### GET /api/mcp/:name — inspect one server (config + discovered tools)
-```jsonc
-// 200
-{ "name": "inventory-echo", "description": "Echo test server", "config_json": "{\"type\":\"local\",…}", "tools": [ { "name": "echo", "description": "Echo back the provided text (test tool)", "inputSchema": { "type": "object", "properties": { "text": { … } }, "required": ["text"] } } ], "created_at": "…" }
-// 404
-{ "error": "mcp server not found: nope" }
-```
-Statuses: `200` · `404`.
-
-### POST /api/mcp/:name/tools — re-probe a registered server
-Connects live and refreshes the stored tool list.
-```jsonc
-// 200 — verified live
-{ "name": "inventory-echo", "count": 1, "tools": [ { "name": "echo", "description": "Echo back the provided text (test tool)", "inputSchema": { … } } ] }
-// 404 { "error": "mcp server not found: nope" }
-// 400 { "error": "spawn failed: …" }   // server process gone or hung
-```
-Statuses: `200` · `400` · `404`.
-
-### DELETE /api/mcp/:name — remove from the registry
-```jsonc
-// 200  { "deleted": true, "name": "inventory-echo" }
-// 404  { "error": "mcp server not found: nope" }
-```
-Definitions still referencing a deleted name fail at run time with the missing-registry error above.
-Statuses: `200` · `404`.
-
-### MCP server implementations
-MCP server processes (stdio scripts, HTTP/SSE endpoints) are **supplied by you** at the paths/URLs you declare — the repo ships none. Verified end to end previously with a request-driven echo stdio server: register-with-probe discovered its tool, and an agent using `mcp.use:["inventory-echo"]` returned `MCP-USE-OK` with `mcp.expand` recorded in its audit chain.
-
-### MCP in definitions (inline, definition-driven runs)
-For a self-contained agent, declare servers directly in the definition; the SDK session receives them as-is:
+A definition is a single JSON file. The bundled schema lives in `src/schema/agent-definition.schema.json`; the CLI and API validate against it. The one shipped example is [`examples/full-stack-developer.agent.json`](examples/full-stack-developer.agent.json).
 
 ```jsonc
-"mcp": {
-  "servers": {
-    "inventory-echo": { "type": "local", "command": "node", "args": ["./my-mcp-servers/echo.mjs"], "tools": ["*"], "timeoutMs": 10000 }
+{
+  "schemaVersion": "1.0",
+  "metadata": { "name": "my-agent", "version": "1.0.0", "description": "…", "tags": [], "color": "#4f7df3" },
+  "persona": {
+    "useCopilotDefaultPrompt": true,
+    "systemMessage": { "mode": "append", "content": "You are…" }
+  },
+  "instructions": {
+    "global": ["…"],
+    "scoped": [{ "applyTo": "src/**/*.ts", "body": "…" }],
+    "agentsMdPaths": ["AGENTS.md"]
+  },
+  "knowledge": { "workingDirectory": ".", "additionalDirectories": [], "sessionStore": false },
+  "agents": [{ "name": "reviewer", "prompt": "…", "tools": ["read", "grep"], "infer": true }],
+  "skills": { "directories": [], "disabled": [] },
+  "task": { "prompt": "…", "deliveryMode": "enqueue" },
+  "tools": {
+    "permissionPolicy": "pattern-list",
+    "builtins": { "default": "allow", "all": true },
+    "harness": true,
+    "allowDestructive": false,
+    "patterns": [{ "tool": "bash", "decision": "allow" }]
+  },
+  "mcp": { "servers": {}, "use": [] },
+  "memory": {
+    "enabled": true,
+    "scope": { "agent": true, "platform": true, "crossAgentRead": false, "writeTarget": "agent" },
+    "recall": { "enabled": true, "k": 12, "hops": 1, "maxChars": 6000, "includeFacts": true },
+    "codeGraph": { "enabled": true, "autoRefresh": true, "root": ".", "symbols": true, "maxFiles": 4000 },
+    "capture": { "episodes": true, "toolFailures": true, "commands": true },
+    "distill": "heuristic"
+  },
+  "provider": {
+    "type": "openai",
+    "baseUrl": "https://api.xiaomimimo.com/v1",
+    "model": "mimo-v2.6-flash",
+    "wireApi": "completions",
+    "providerApiKey": "${MIMO_API_KEY}"
+  },
+  "runtime": {
+    "streaming": false,
+    "turnTimeoutMs": 7200000,
+    "maxAiCredits": 2000,
+    "logLevel": "info",
+    "clientInfo": { "applicationName": "minions-assembler", "applicationVersion": "1.0.0" }
   }
 }
 ```
 
-### CLI (registry flows — same two flows from the command line)
-```bash
-npx tsx src/cli.ts mcp register --name inventory-echo \
-  --config '{"type":"local","command":"node","args":["./my-mcp-servers/echo.mjs"],"tools":["*"]}' \
-  --probe --db ./data/minion.db
-# -> probed 1 tool(s): echo
-# -> registered: inventory-echo — reference it from a definition with "mcp": { "use": ["inventory-echo"] }
+### Provider modes
 
-npx tsx src/cli.ts mcp-list --db ./data/minion.db
-```
-CLI runs resolve `mcp.use` from the same `--db` registry; unknown refs exit code 3.
+- **Inline key** — `provider.providerApiKey` may be a literal (sealed to `enc:v1:` on save), a `${ENV_VAR}` reference (resolved at run time, portable across machines) or an `enc:v1:` token.
+- **Settings provider** — set `provider.providerRef` to a provider id from **Settings → Providers**. The key stays in the vault; the definition stays portable. The same provider can be used by chat and headless runs.
+- `wireApi` is `completions` for OpenAI-compatible endpoints (Mimo, OpenRouter, …) or `responses` where supported.
+
+### Permissions
+
+`tools.permissionPolicy` is `deny-all`, `approve-all-ci-only` or `pattern-list`. `pattern-list` evaluates `tools.patterns` first, then `tools.builtins.default`. The destructive gate always applies, regardless of policy. In headless runs, `--approval autopilot` auto-approves `ask` decisions (still subject to the destructive gate), `strict` denies them, and the default keeps the legacy deferred-deny.
+
+### Harness tools
+
+With `tools.harness: true` the agent gets a small, confined coding harness: `bash`, `read`, `write`, `create`, `edit`, `glob`, `grep` and `ls`. All paths are confined to the run workspace. Every tool call is audited.
+
+### MCP
+
+Register servers in the MCP page or with `POST /api/mcp`; reference them from a definition with `mcp.use: ["name"]`. Literal secrets in `env`/`headers` are sealed before storage; `${ENV_VAR}` references stay portable. Probing a server lists its tools and can diagnose a broken command.
 
 ---
 
-## 6. CLI reference
+## Memory: working context vs long-term knowledge
 
-```
-minions-assembler validate --agentDefinition <path>
-minions-assembler run      --agentDefinition <path> [--task <text>] [--sessionId <id>] [--resume]
-                          [--no-stream] [--output-format text|json] [--share <path>]
-                          [--db <path>] [--approval autopilot|strict] [--yes]
-minions-assembler import-md --file <path> [--no-register] [--db <path>]
-minions-assembler mcp register …  /  mcp-list [--db <path>]
-minions-assembler serve    [--port <n>] [--db <path>]
-minions-assembler list     [--db <path>]
-minions-assembler show     <id> [--db <path>]
-minions-assembler history  [--agentId <id>] [--db <path>]
-minions-assembler chat create --agent <id> [--title <text>] [--db <path>]
-minions-assembler chat list   [--db <path>]
-minions-assembler chat send   --thread <id> --message <text> [--timeout-ms <n>] [--db <path>]
-minions-assembler chat read   --thread <id> [--db <path>]
-```
+The agent keeps two different kinds of memory, on purpose.
 
-> `chat create --agent <id>` requires a **registered** agent id (a row in the `agents` table — e.g. `my-agent@1.0.0`, find ids with `list`). The built-in GitHub Copilot default agent is synthesized by the server and only available through the web UI's agent picker.
+**Working memory** is the SDK session: the conversation for the current chat thread or run. It is scoped to that session and is how the agent follows a multi-turn task. It is not the same as long-term memory.
 
-`run` exit codes: `0` done · `2` validation · `3` runtime/auth · `4` permission (`approve-all-ci-only` without `--yes`). `import-md` exits `2` on an invalid profile. `chat send` exits `2` for an unknown thread/agent, `3` when the turn fails.
+**Long-term memory** is a SQLite knowledge graph shared across runs:
 
-### 6b. Executing an exported definition file (the export → run round-trip)
+- **Datasets** — `agent:<name>` for one agent's lessons/facts, and `platform` for knowledge shared by every agent. A definition chooses `scope.agent`, `scope.platform`, `crossAgentRead` and `writeTarget`.
+- **Nodes and edges** — files, symbols, facts, lessons, tasks and runs, with typed edges (imports, defines, recalls, follows, …). The code graph is refreshed automatically from the workspace.
+- **Episodes** — one record per run: task, outcome, tools, errors, commands and summary. Successful and failed runs both teach.
+- **Lessons** — distilled, searchable rules ("run the tests before packaging"). They can be linked to triggers and recalled by lexical similarity.
+- **Recall** — before a run starts, the engine searches the agent + platform datasets, expands one hop through the graph and injects a bounded context block (default 6000 chars). It emits `memory.injected` / `memory.recalled` events so you can see exactly what was used.
+- **Capture** — during and after a run it notes tool failures, commands, errors and the final summary, then writes an episode and optionally distills lessons.
+- **Curation** — `verify`, `promote`, `forget`, `feedback` and `improve` endpoints/commands let a human (or a judge) correct the graph. Nothing deletes tables; `forget` deletes rows.
 
-Every agent definition can be exported from the Cockpit UI (⇩ Export on agent rows and detail pages) or via `GET /api/agents/:id/definition?download=1`. The downloaded JSON executes straight from disk — no server round-trip needed:
+Embeddings are optional and disabled by default. Retrieval is lexical and deterministic, so it works offline and has no hidden API cost. The interface is ready for an embedding provider when you want semantic recall.
 
-```bash
-# 1. Export from the UI (or curl the definition endpoint) → my-agent.json
-
-# 2. Agent file: validate then execute locally (BYOK keys from env, e.g. ${MIMO_API_KEY})
-node dist/cli.js validate --agentDefinition ./my-agent.json
-node dist/cli.js run      --agentDefinition ./my-agent.json --output-format json --no-stream
-# -> {"runId":"run_…","sessionId":"sess_…","traceId":"tr_…","status":"done",…}
-#    the runId is the same auditable run you would see in Cockpit → Runs.
-
-```
-
-The inline API route accepts the same definitions without any file:
+Inspect it:
 
 ```bash
-# run a pasted agent definition (run id compatible with GET /api/runs/:id)
-curl -X POST :3100/api/agent-definitions/runs   -H 'Content-Type: application/json' \
-  -d '{"definition":{…full AgentDefinition…},"taskOverride":"Reply with exactly: OK"}'
+minions-assembler memory stats
+minions-assembler memory search "postgres migration"
+curl -sS 'http://127.0.0.1:3100/api/memory/graph?dataset=agent:full-stack-developer'
 ```
 
-Note: exported agent files keep `${ENV_VAR}` provider-key references, so the variable must be set in the executing shell; sealed `enc:v1:` tokens decrypt only on the machine that stored them.
-
-`run` exit codes: `0` done · `2` validation · `3` runtime/auth · `4` permission (`approve-all-ci-only` without `--yes`).
-
-Examples:
-```bash
-# one-shot with streaming deltas to stdout
-MIMO_API_KEY=… node dist/cli.js run --agentDefinition ./examples/expense-tracker-dev.agent.json
-
-# override task + Markdown transcript + JSON for the pipeline
-… run --agentDefinition ./my-agent.json --task "Summarize this repo" --share ./out/transcript.md --output-format json
-
-# resume an existing conversation
-… run --agentDefinition ./my-agent.json --sessionId sess_mv3uupeu_tw4p7e --resume --task "Now add tests"
-```
-CI: set `COPILOT_AUTO_UPDATE=false`; `--yes` is required for `approve-all-ci-only` (fails closed otherwise). Default policy `deny-all` allows nothing without an explicit pattern.
+or `GET /api/memory/stats`, `/api/memory/graph`, `/api/memory/lessons`.
 
 ---
 
-## 7. Agent definition JSON (schema v1.0)
+## Security and operations
 
-Full schema: [`src/schema/agent-definition.schema.json`](src/schema/agent-definition.schema.json).
+- **Bind** — the server binds `127.0.0.1` by default. Do not expose it directly to a network.
+- **Host allow-list** — `Host`/`Origin` must be loopback unless listed in `MINION_ALLOWED_HOSTS` (comma-separated). This defeats DNS rebinding and cross-site posts.
+- **Origin check** — state-changing requests with an `Origin` header must match an allowed host/port. CLI/curl without `Origin` are unaffected.
+- **Bearer token** — set `MINION_API_TOKEN` to require `Authorization: Bearer <token>` on every `/api/*` request (the SPA does not send it; use it behind a proxy or for API-only deployments).
+- **Credentials** — provider keys and MCP secrets are AES-256-GCM encrypted at rest (`enc:v1:`), never returned by list endpoints, and redacted from logs and definition exports. `${ENV_VAR}` refs are resolved only at run time.
+- **Approvals** — sensitive tool calls can wait for a human in chat; headless runs use `autopilot`/`strict` or the deferred-deny default. The destructive gate is not configurable away.
+- **Retention** — configure days/scope in Settings. Pinned chats and running runs are preserved. Audit logs live outside project folders (`<db dir>/audit` by default) so purging a project cannot delete them.
+- **Workspaces** — every headless run gets `<workspace>/run_<id>` (or `--runDir`), so one run cannot overwrite another. Run output is never committed by the server.
 
-| Section | Key fields | Maps to (Copilot SDK) |
-|---|---|---|
-| `metadata` | `name`, `version`, `description?`, `tags?` | — (identity + audit join) |
-| `persona` | `useCopilotDefaultPrompt?` (default true), `systemMessage?` — **optional**: omit entirely to run on the pure default Copilot CLI prompt; `systemMessage.mode: append\|replace\|customize`, `.content`, `.sections{identity,preamble,tone,guidelines,safety,tool_instructions}`, `.acknowledgeReplaceRisks` | session `systemMessage` (append/customize keep the SDK-managed default prompt; replace drops it and its guardrails — must acknowledge) |
-| `instructions` | `global[]`, `scoped[]{applyTo,body}`, `refreshDiscoveryCache` | injected into prompt + `refreshCustomInstructions` |
-| `knowledge.workingDirectory` | `workingDirectory`, `additionalDirectories[]`, `attachments[]{type,path\|directory\|blob,…}`, `sessionStore` | session `workingDirectory`, `additionalDirectories`, message `attachments`, `enableSessionStore` |
-| `agents[]` | `name`, `prompt` (specialist persona), `description`, `tools[]`, `infer`, `skills[]`, `model`, `reasoningEffort` | session `customAgents` |
-| `defaultAgent` | one `agents[]` name | session `agent` |
-| `skills` | `directories[]` — definition-declared folder references (absolute, or relative resolved against the session workspace, e.g. `workspace-et/skills`), each containing `SKILL.md` files; `disabled[]` | `skillDirectories`, `disabledSkills` |
-| `task` | `prompt`, `deliveryMode: enqueue\|immediate`, `attachments[]` | `session.send({prompt, mode, attachments})` |
-| `tools` | `custom[]{name,description,parametersSchema}`, `available[]`, `excluded[]`, `builtins{all,default,perTool}` — **select-all + per-tool allow/ask/deny** (covers built-in, MCP and custom tools; `ask` resolves as an audited deny in headless runs), `allowDestructive?` (default false — gates recursive rm / forced pushes / SQL DROP / process-kill commands like taskkill\/pkill\/kill\/Stop-Process / destructive-named MCP calls), `harness` (default **true** — injects `bash`/`mkdir`/`write`/`create`), `permissionPolicy: deny-all\|approve-all-ci-only\|pattern-list`, `patterns[]{tool,decision,reason}` | `tools`, `availableTools`, `excludedTools`, `onPreToolUse`/`onPermissionRequest` (patterns → perTool → destructive gate → harness → policy fallback) |
-| `mcp` | `servers{name:{type:local\|stdio\|http\|sse,command,args,env,cwd,url,headers,tools,timeoutMs}}`, `disabled[]` | session `mcpServers`, `disabledMcpServers` (secrets only as `${ENV_VAR}`) |
-| `provider` | `type: openai\|azure\|anthropic`, `baseUrl`, `model`, `wireApi: completions\|responses`, **`providerApiKey`** (required — `enc:v1:` token, `${ENV_VAR}` ref, or literal sealed on save), `azureApiVersion?` | BYOK `provider` + session `model` (credential resolved at run/resume time) |
-| `runtime` | `streaming`, `sessionId`, `resume`, `idleTimeoutSecs`, `turnTimeoutMs` (default 45 min), `maxAiCredits` (SDK floor 30), `toolSearch{enabled,deferThreshold}`, `excludedBuiltinAgents[]`, `includedBuiltinSkills[]`, `autopilot`, `logLevel`, `clientInfo{}` | session/client options |
-
-Minimal example:
-```json
-{
-  "schemaVersion": "1.0",
-  "metadata": { "name": "my-reviewer", "version": "1.0.0", "description": "PR reviewer" },
-  "persona": { "systemMessage": { "mode": "append", "content": "You are a concise senior engineer. Cite file paths." } },
-  "instructions": { "global": ["Prefer minimal diffs."] },
-  "knowledge": { "workingDirectory": "./my-workspace" },
-  "agents": [{ "name": "reviewer", "prompt": "Review code for security and test coverage.", "tools": ["grep","glob","view"], "infer": true }],
-  "defaultAgent": "reviewer",
-  "task": { "prompt": "Review the auth module.", "deliveryMode": "enqueue" },
-  "tools": { "permissionPolicy": "pattern-list", "patterns": [{ "tool": "view", "decision": "allow" }] },
-  "mcp": { "servers": {} },
-  "provider": { "type": "openai", "baseUrl": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.6-flash", "wireApi": "completions", "providerApiKey": "${MIMO_API_KEY}" },
-  "runtime": { "streaming": true, "idleTimeoutSecs": 300, "maxAiCredits": 100 }
-}
-```
-
-Bundled example ([`examples/`](examples/)) — schema-compliant, verified by `tests/examples-compliance.test.ts` against [`src/schema/`](src/schema/):
-
-- [`examples/expense-tracker-dev.agent.json`](examples/expense-tracker-dev.agent.json) — **front-end engineer** that builds a full Expense Tracker (add/delete expenses, summary cards, div-bar category chart, filters, localStorage persistence, dark theme, zero dependencies). Also served as the UI/API "working template" (`GET /api/templates/default`).
+Operations:
 
 ```bash
-MIMO_API_KEY=… node dist/cli.js run --agentDefinition ./examples/expense-tracker-dev.agent.json   # uses the default task
-# or assign your own task:
-MIMO_API_KEY=… node dist/cli.js run --agentDefinition ./examples/expense-tracker-dev.agent.json \
-  --task "Rebuild the expense tracker page with a light theme and add a search box filtering by note text"
+# health and version
+curl -sS http://127.0.0.1:3100/api/status
+
+# audit log (JSONL)
+tail -f .minion/server.log.jsonl
+
+# stop a live run
+curl -sS -X POST http://127.0.0.1:3100/api/runs/<runId>/stop
 ```
 
-> Tip: point `knowledge.workingDirectory` at the workspace (or an absolute path anywhere on disk) and let the agent create output subfolders there. Long build tasks stream live; multi-file coding builds can take minutes — the runner waits up to **45 min per turn** by default (override with `runtime.turnTimeoutMs` or the run-body `turnTimeoutMs`).
+---
 
-### Default Copilot prompt & tool toggles (wizard → definition)
+## Development
 
-The Define wizard writes two new control surfaces into the definition JSON:
+```bash
+npm install                 # server dependencies
+npm --prefix web install    # UI dependencies
+npm run typecheck           # server TypeScript
+npm run typecheck:web       # UI TypeScript
+npm test                    # server suites (Vitest)
+npm run test:web            # UI suite
+npm run build               # dist + dist/web
+npm run dev:serve           # server from source
+npm run dev:web             # Vite dev server (proxy to 3100)
+```
 
-1. **“Include default Copilot system prompt”** (Step 2, default ON). Checked → `persona.useCopilotDefaultPrompt: true` and the custom persona rides on the SDK-managed Copilot CLI prompt via `append`/`customize` (leave the content box empty for a **pure default-prompt agent**, where `persona.systemMessage` is omitted entirely). Unchecked → `useCopilotDefaultPrompt: false` + `systemMessage.mode: 'replace'` (replaces the full Copilot prompt, guardrails included) with the risk acknowledgement. Every run records a `persona.resolved` audit event stating exactly what the session prompt became.
-2. **Copilot CLI tools grid** (Step 5): a **select-all checkbox** for the full built-in CLI toolset plus per-tool rows with **allow / ask / deny** decisions (`tools.builtins.{all,default,perTool}`), a **default decision** for unlisted tools (`builtins.default` — also covers MCP + custom tools), and an **“Allow destructive operations”** checkbox (`tools.allowDestructive`, default **blocked**). Armed semantics:
-   - `all: true` → every built-in CLI tool is available, exactly like the default Copilot agent; only `ask`/`deny` per-tool overrides are written.
-   - `all: false` → `availableTools` becomes an explicit allowlist (`mcp:*`, `custom:*` + one `builtin:<name>` per selected row).
-   - `ask` tools (and MCP tools with the same decisions) resolve as a **denied call with an audited `permission.ask_denied` event** during headless runs — interactive approval is deferred; the run never hangs.
-   - Destructive-gate denials land as `permission.destructive_denied` events.
-3. **Advanced SDK runtime keys** (Step 8): `runtime.toolSearch` (`{enabled, deferThreshold}`), `runtime.excludedBuiltinAgents[]`, `runtime.includedBuiltinSkills[]`, `runtime.autopilot` — all mapped straight to session options.
+Layout:
 
-The wizard's tool list is a curated registry (`GET /api/builtin-tools`); the runtime inventory is version-dependent and unlisted tool names are accepted as freeform entries — effective control always uses source-qualified `availableTools`/`excludedTools` patterns (`builtin:*`, `builtin:<name>`, `mcp:*`, `mcp:<server>-<tool>`, `custom:<name>`).
-
-### Coding harness (bash / mkdir / write / create)
-
-Runs behave like a regular GitHub Copilot coding agent harness, with your own configuration on top. Unless `tools.harness` is `false`, every session gets:
-
-| Tool | What it does |
-|---|---|
-| `bash` | Run a shell command in the workspace (`shell: true`, per-command timeout, exit code + stdout/stderr). Replaces the missing shell tool that caused `Tool 'bash' does not exist`. |
-| `mkdir` | `mkdir -p` inside the workspace. |
-| `write` | Write/append a UTF-8 file, creating missing parent directories automatically. |
-| `create` | Same as the built-in create, but parents are created first — nested paths like `app/page.tsx` no longer fail with `Parent directory does not exist`. |
-
-Plus a pre-tool hook that `mkdir -p`s the parent of any `create`/`edit`/`write` path before the stock tool runs.
-
-These tools are injected into **both** the session `availableTools` allowlist **and** every `agents[].tools` sub-agent allowlist (a specialist scoped to `["grep","glob","view","write","edit"]` still gets `bash`/`mkdir`/`create`). Opt out per definition with `"tools": { "harness": false }`, or with `excluded: ["bash"]`. Path escapes above the workspace root are rejected.
-
-**Turn budget** (per `sendAndWait` call), resolved in priority order:
-
-1. Run-body `turnTimeoutMs` (API/CLI override)
-2. `runtime.turnTimeoutMs` in the definition
-3. `RUN_TURN_TIMEOUT_MS` env var
-4. Default **45 minutes** (`2700000` ms), clamped to `[1s, 6h]`
-
-Recorded on every run as a `run.turn_budget` audit event.
-
-### Elaborate (AI-aided trait elaboration)
-
-The Define wizard's **Elaborate** button expands sparse persona/task notes into production-grade instructions via your configured provider. Tunables (highest priority first):
-
-| Knob | Wizard field | Env fallback | Default |
-|---|---|---|---|
-| Max output tokens | Max output tokens | `ELABORATE_MAX_TOKENS` | provider-appropriate |
-| Timeout | Timeout (ms) | `ELABORATE_TIMEOUT_MS` | provider-appropriate |
-| Temperature | Temperature | `ELABORATE_TEMPERATURE` | provider-appropriate |
-
-The request runs with `AbortSignal.timeout(…)`, **3 attempts** with 800 ms × attempt backoff on retryable failures (408/429/5xx, timeout, `ECONNRESET`/`ETIMEDOUT`, empty content), and distinct error messages for 401/403 (credential), 404 (base URL/model), 429 (rate limit) and empty generations. The UI's `api()` client adds 30 s of slack over the server budget and surfaces a clear timeout message. Slow generations survive because the Fastify server runs with `connectionTimeout: 0` / `requestTimeout: 0` (a 30 s connection timeout used to kill mid-generation sockets).
+```
+src/
+  agents/        definitions, loading/validation, persona/session translation,
+                 tools policy, harness, permissions, default agents, MCP glue
+  core/          types, audit log, crypto, workspace, run queue, package info
+  execution/     headless runner, chat runner/engine/hub, approvals, retention,
+                 usage proxy
+  http/          Fastify route groups (system, agents, runs, mcp, chat,
+                 platform, memory, ui), security, static SPA serving
+  mcp/           MCP client/probe/OAuth
+  memory/        schema, store, code graph, recall, capture, lessons, tools
+  store/         SQLite adapter, migrations, platform store
+  schema/        agent-definition.schema.json
+web/             Vite + React + TypeScript cockpit
+tests/           Vitest suites
+examples/        the one shipping example definition
+```
 
 ---
 
-## 8. Audit, traceability, and secrets
+## Testing and publishing
 
-- `runId ↔ sessionId ↔ traceId ↔ definition_hash` join across all tables. The `definition_hash` is SHA-256 over the canonical **unsealed** definition (first 16 hex chars) — the same value in the UI, API and CLI for the same definition content, so drift or tampering is visible.
-- Dual-write: human JSONL at `<workspace>/runs/<runId>/events.jsonl` **and** the SQLite `events` table, scrubbed of secret-looking values at write time.
-- **Retention (default 7 days, configurable)**: `GET /api/retention` reports the last-run cutoff; `PATCH /api/settings` → `retention: { days: 0–3650, scope: "everything"|"unpinned", keepPinned }` (UI: **Settings → Data & retention**). A sweep runs at startup and on an interval, purging expired runs/chat history; `POST /api/retention/purge` runs it on demand and `metrics_daily` rollups survive purges.
-- Structured **server audit log** at `<workspace>/.minion/server.log.jsonl` (per-HTTP-request in/out + status + ms, lifecycle events) — browse via `GET /api/logs` or the Dashboard log viewer.
-- **Agent workspace** configurable: definition `knowledge.workingDirectory` > `MINION_WORKSPACE` env > cwd (§4.2); resolved root is reported in `GET /api/status` and recorded in each run's `run.start` event.
-- Usage (tokens in/out, credits, duration, endpoint) from `assistant.usage`; transcripts hashed (SHA-256).
-- Verify: `grep -c 'your-key' data/minion.db` and the run transcript paths printed by the runner → expect `0` (verified).
+```bash
+npm run typecheck && npm run typecheck:web
+npm test && npm run test:web
+npm run build
+npm pack --dry-run            # inspect the exact tarball contents
+npm pack                      # build is run by prepack
+npm publish --access public   # publish the single artifact (when you are ready)
+```
 
----
+The release contract checked by the suite:
 
-## 9. Tests
-
-Live-verified this build: typecheck clean · unit tests (`tests/`, via `vitest.config.ts`) · all UI screens `200` (`/` dashboard, `/ui`, `/ui/agents(/:id)`, `/ui/runs(/:id)`, `/ui/sessions(/:sid)`, `/ui/mcp(/:name)`, `/docs`, 404 pages) · validate endpoint `200/400` both proven · register by path `200` · unknown agent/run/server `404` messages · MCP register/probe/list/delete live-verified with the echo server · agent `mcp.use` run returned `MCP-USE-OK` with `mcp.expand` in the audit chain · dashboard metrics + workspace resolution live-verified · **coding harness verified live**: nested `create` of `app/` `components/` `lib/` trees, `bash` running `node`/`npm`/tests (exit codes surfaced), `mkdir -p`, path-escape rejection, `toolSearch` deferral disabled so the model actually sees the tools · **Elaborate verified live** (short + long generation, 3-attempt retry, clear 401/404/429/empty-content errors; Fastify `connectionTimeout: 0` so slow generations are not socket-yanked) · **UI Developer / FE Engineer examples verified live** (453-line dashboard in 72 s; 890-line landing page) · **Chat E2E verified live**: wizard quick-create → publish → 1:1 chat turn built a Spring Boot + Next.js CRUD app in the agent's declared workspace (backend `mvn test` 5/5 green, frontend built) with zero path-escape denials and the live reasoning/tool stream rendered in the Chat UI.
-
-### 9.0 Three-mode end-to-end verification (UI · CLI · API)
-
-A **Full Stack Developer** agent (Spring Boot 3 + Next.js Employee CRUD task) was executed through all three surfaces and each generated app was independently verified:
-
-| Mode | Invocation | Result |
-|---|---|---|
-| **UI** | Cockpit → **New run** → full-stack-developer@1.0.0 | ✅ done · full event chain + output + verification table rendered in the run detail page |
-| **CLI** | `minions-assembler run --agentDefinition full-stack-developer.json --output-format json --no-stream` | ✅ done · JSON result with `runId`/`sessionId`/`traceId`, same `definition_hash` as the UI run |
-| **API** | `POST /api/agent-definitions/runs` (inline definition) | ✅ done · identical run shape, `runId` queryable via `GET /api/runs/:id` |
-
-Per generated app (independently of the agent's own claims): `mvn package` exit 0 (18–25 tests green) · `npm run build` exit 0 · live CRUD smoke against the running jar — list 200, create 201, read 200, missing 404, update 200, delete 204, delete-again 404, invalid input 400 with per-field errors · CORS preflight 200 with correct `Access-Control-Allow-*` · Next.js production serve 200. All checks passed on all three runs; no platform defects found in the generated output.
-
-### 9.1 Production hardening
-
-- **Credentials via fixed `providerApiKey`**: the definition attribute is always `provider.providerApiKey` (same name as the wizard field). Accepts `enc:v1:` tokens (AES-256-GCM at rest), `${ENV_VAR}` references, or literal keys that are sealed to `enc:v1:` on save. Raw keys never persist in JSON, DB, transcripts or the audit log — `scrubSecrets` redacts secret-shaped values from every persisted event and log line.
-- **Workspace confinement**: the runner always passes the absolutely-resolved workspace root to the SDK session, so agents cannot write outside their workspace even with relative `knowledge.workingDirectory` paths.
-- **Ordered shutdown**: run teardown disconnects the session, then stops the client, releasing the spawned SDK child process even on `run.error`.
-- **Fast-fail validation**: bad definitions, invalid AUDIT_LEVEL values, and missing credentials abort *before* any SDK session starts; errors persist as `run.error` events and a `failed` run row (auditable, not lost).
-- **Timeout tiers**: generous 45-minute per-turn `sendAndWait` budget for multi-turn tool-using tasks (`runtime.turnTimeoutMs` or run-body `turnTimeoutMs` overrides); `AUDIT_LEVEL` env/flag controls event volume so full-verbosity runs don't flood storage.
-- **Audit levels** (`AUDIT_LEVEL` env, `--audit-level` flag, or `auditLevel` API field): `minimal` keeps run lifecycle only; `default` adds tool calls/results + permission decisions; `full` adds reasoning, streaming deltas, and partial results.
-- **Lean repo layout**: entry points (`cli.ts`, `serve.ts`, `server.ts`) plus functional module folders in `src/` (`core/`, `agents/`, `execution/`, `mcp/`, `http/`, `ui/`, `store/`, `schema/`), tests in a root `tests/` folder, compiled output in flat `dist/` (`tsc -p tsconfig.build.json`, so `dist/cli.js` matches the npm `bin`), sample definitions in `examples/` compliant with the bundled schemas in `src/schema/`, SQLite auto-created at `data/minion.db` on first boot, and per-run workspaces holding skills and artifacts — MCP servers and skill directories are declared inside definitions; there is no app-owned bundled MCP server or repo-root skills folder.
+- no destructive schema migrations; old databases upgrade forward;
+- event payloads stay valid JSON under truncation;
+- run rows never leak the definition snapshot; the snapshot is available at `/api/runs/:id/definition`;
+- stored definitions are hydrated and sealed on every execution path;
+- the retired `/ui` surface stays a 404 (it is not in the package); Swagger still works next to the SPA;
+- the npm tarball contains `dist/web` and one example, with no tests/data/runs.
 
 ---
 
-## 10. Database schema (SQLite v1)
+## Troubleshooting
 
-| Table | Purpose |
-|---|---|
-| `agents` | `id (name@version)`, definition JSON, hash, timestamps |
-| `runs` | agent, session, trace, status, model, provider, prompt, error |
-| `events` | ordered per-run audit stream (`seq`, `type`, payload JSON, persisted flag) |
-| `mcp_servers` | registry of MCP servers: name, config JSON, description, discovered tools JSON |
-| `sessions` | SDK session registry: session ↔ run ↔ agent ↔ trace, status, final summary |
-| `usage` | tokens in/out, credits, duration, endpoint, request id |
-| `transcripts` | shared transcript path + SHA-256 |
-| `credentials` | named secrets vault — AES-256-GCM `enc:v1:` sealed values |
-| `chat_threads` / `chat_messages` | Chat threads (agent + project bound) and their persistent transcripts |
-| `providers` | Model providers (BYOK); key material lives in `credentials` |
-| `projects` | Recently opened project folders |
-| `settings` | Key/value application settings (retention, approvals, defaults, onboarding) |
-| `approvals` | Tool-permission requests and decisions (audit trail) |
-| `metrics_daily` | Per-day run/token rollups that survive retention purges |
-
-Postgres ships as an interface-conformant stub ([`src/store/postgres-stub.ts`](src/store/postgres-stub.ts)); the swap is mechanical.
+| Symptom | Fix |
+| --- | --- |
+| `Web app not built` at `/` | Run `npm run build` (or install the npm package, which includes `dist/web`). |
+| `No model provider is configured` | Add a provider in Settings and make it the default. |
+| Provider 401 | Re-enter the key; check `baseUrl`, `wireApi` and model name. `providerRef` agents resolve the key from Settings at run time. |
+| `agent not found: name@version` | Register/import the definition first, or use the inline-run endpoint. |
+| Run hangs | Check the provider status and the run's event timeline. Increase `turnTimeoutMs` for large builds; use **Stop** to abort. |
+| `EADDRINUSE` | Choose another `--port`. |
+| MCP probe fails | Verify the command/URL and secrets; use the probe diagnostics. |
+| Database locked | One server process per database file. WAL allows readers, not two writers. |
+| Windows `ENOENT` for a command | Use Git Bash or install the tool on `PATH`; the agent harness inherits the server environment. |
 
 ---
 
-## 11. Known limitations
+## Known limitations
 
-- **Postgres** = stub (SQLite-first scope).
-- **Serve auth**: Host/Origin checks plus an optional `MINION_API_TOKEN` for API clients (which also blocks the browser app); there are no user accounts — front with a proxy before shared exposure.
-- **`maxAiCredits`**: hard SDK floor of 30 (`Minimum session limit is 30 AI credits`).
-- **Plugin file agents** (`agents/*.md`) not yet mapped — inline `agents[]` only.
-- **MCP probes**: one-shot initialize→tools/list per call (no persistent connection). OAuth-protected remote servers use the built-in Authorization Code + PKCE flow (`POST /api/mcp/oauth/start` → browser → `GET /api/mcp/oauth/callback`, status at `GET /api/mcp/oauth/status`); servers without dynamic client registration (e.g. GitHub) need a pre-registered OAuth client first.
-- **Usage rows**: token counts arrive when the runtime emits token-level usage data; credits/duration are always recorded.
-- **MCP test server**: strict request-driven protocol; a server that writes before its first request desyncs the CLI's stdio handshake (this is how the bundled echo server was debugged).
-- **Redaction quirks**: values containing `key|token|secret` are masked in *display* responses (e.g. `baseUrl` may show `***`); stored runs keep the real value. Credential env var **names** (`MIMO_API_KEY`) are fine and expected.
-- **Windows note**: backgrounded `serve` may detach from its shell PID; stop via port→PID lookup (§4.3).
+- One server process should own one SQLite database file; there is no multi-writer lock.
+- Long-running builds are bounded by `runtime.turnTimeoutMs` (default 45 minutes; the example uses 2 hours).
+- Embedding-based recall is optional and not enabled by default.
+- The admin surface in generated demo apps is intentionally unauthenticated unless the app itself adds auth.
+- GitLab jobs are capped by the project's job timeout; split very large builds into phases (the reference pipeline ships with backend/frontend phases and `--runDir` reuse).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

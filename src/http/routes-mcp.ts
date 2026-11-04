@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { validateMcpConfig, probeMcpTools, sealMcpSecrets } from '../mcp/mcp.js';
 import type { McpTool, AuthHint, McpServerConfig } from '../mcp/mcp.js';
 import type { DbAdapter } from '../store/adapter.js';
+import { hydrateAgentDefinition } from '../agents/loader.js';
 import { encryptToToken, resolveProviderApiKeyValue } from '../core/crypto.js';
 import { errorSchema } from './route-schemas.js';
-import { esc } from '../ui/ui-util.js';
+import { esc } from '../core/html.js';
 
 /**
  * MCP registry route group: register/list/probe/delete MCP servers, LLM-assisted probe
@@ -386,7 +387,8 @@ async function llmAutoFixConfig(db: DbAdapter, config: unknown, errMessage: stri
     const row = db.getAgent(meta.id) as { definition_json: string } | undefined;
     if (!row?.definition_json) continue;
     let provider: { type?: string; baseUrl?: string; model?: string; providerApiKey?: string } | null = null;
-    try { provider = (JSON.parse(row.definition_json) as { provider?: { type?: string; baseUrl?: string; model?: string; providerApiKey?: string } }).provider ?? null; } catch { continue; }
+    // Hydration resolves ${ENV_VAR} refs (e.g. in baseUrl) before the provider is used.
+    try { provider = hydrateAgentDefinition(row.definition_json as string).resolved.provider ?? null; } catch { continue; }
     if (!provider?.baseUrl || !provider.model || !provider.providerApiKey) continue;
     try {
       const key = resolveProviderApiKeyValue(provider.providerApiKey);
@@ -443,7 +445,8 @@ async function llmDiagnoseProbeFailure(db: DbAdapter, config: unknown, errMessag
     const row = db.getAgent(meta.id) as { definition_json: string } | undefined;
     if (!row?.definition_json) continue;
     let provider: { type?: string; baseUrl?: string; model?: string; providerApiKey?: string } | null = null;
-    try { provider = (JSON.parse(row.definition_json) as { provider?: { type?: string; baseUrl?: string; model?: string; providerApiKey?: string } }).provider ?? null; } catch { continue; }
+    // Hydration resolves ${ENV_VAR} refs (e.g. in baseUrl) before the provider is used.
+    try { provider = hydrateAgentDefinition(row.definition_json as string).resolved.provider ?? null; } catch { continue; }
     if (!provider?.baseUrl || !provider.model || !provider.providerApiKey) continue;
     try {
       const key = resolveProviderApiKeyValue(provider.providerApiKey);

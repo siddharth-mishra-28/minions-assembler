@@ -1,10 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { mkdirSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { resolveWorkspace } from '../core/workspace.js';
 import { abortRun, executeRun } from '../execution/runner.js';
-import { validateDefinitionObject } from '../agents/loader.js';
+import { validateDefinitionObject, hydrateAgentDefinition, hydrateDefinitionObject, redactedForLog } from '../agents/loader.js';
+import { sealDefinitionSecrets } from '../agents/provider-keys.js';
+import type { AgentDefinition } from '../core/types.js';
 import type { DbAdapter } from '../store/adapter.js';
 import type { McpServerConfig } from '../mcp/mcp.js';
 import type { RunQueue } from '../core/run-queue.js';
+import { resolveMemoryConfig } from '../memory/config.js';
+import { createMemoryRuntime } from '../memory/runtime.js';
+import type { MemoryStore } from '../memory/store.js';
 import { errorSchema } from './route-schemas.js';
 
 /**
@@ -13,8 +20,33 @@ import { errorSchema } from './route-schemas.js';
  * All execution funnels through the same executeRun machinery and the shared RunQueue,
  * so concurrent POSTs execute in submission order.
  */
-export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapter; runQueue: RunQueue }): Promise<void> {
-  const { db, runQueue } = ctx;
+export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapter; runQueue: RunQueue; memoryStore?: MemoryStore }): Promise<void> {
+  const { db, runQueue, memoryStore } = ctx;
+
+  /**
+   * Optional per-run working directory. HTTP callers may reuse the directory a previous
+   * run produced (phase builds), but the path is confined to the server workspace so a
+   * request cannot point a run at an arbitrary filesystem location.
+   */
+  const resolveRunDir = (raw?: string): { runDir?: string; error?: string } => {
+    if (!raw?.trim()) return {};
+    const root = resolve(resolveWorkspace().root);
+    const dir = resolve(raw.trim());
+    const rel = relative(root, dir);
+    if (rel.startsWith('..') || isAbsolute(rel)) return { error: `runDir must be inside the server workspace (${root})` };
+    return { runDir: dir };
+  };
+
+  /**
+   * Per-run memory runtime. Config resolves from the agent's DB row over the
+   * platform defaults row, so behavior is fully database-driven.
+   */
+  const memoryFor = (definition: AgentDefinition, agentId: string, task: string) => {
+    if (!memoryStore) return undefined;
+    const config = resolveMemoryConfig(memoryStore, definition);
+    if (!config.enabled) return undefined;
+    return createMemoryRuntime({ store: memoryStore, config, definition, agentId, task });
+  };
 
   const runResultSchema = {
     type: 'object',
@@ -56,25 +88,37 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
           auditLevel: { type: 'string', enum: ['minimal', 'default', 'full'], description: 'Audit verbosity for this run (default from AUDIT_LEVEL env)', default: 'default' },
           approvalMode: { type: 'string', enum: ['autopilot', 'strict'], description: 'autopilot auto-approves every ask decision (destructive gate still applies); strict denies them. Default: ask decisions are denied.' },
           turnTimeoutMs: { type: 'integer', minimum: 1000, maximum: 21600000, description: 'Per-turn budget in ms (overrides definition runtime.turnTimeoutMs / RUN_TURN_TIMEOUT_MS; default 2700000 = 45 min)' },
+          runDir: { type: 'string', description: 'Optional working directory for this run (must be inside the server workspace). Reuse the same directory for phase builds.', example: './runs/phase-build' },
         },
       },
-      response: { 200: runResultSchema, 404: { ...errorSchema, description: 'Unknown agent id' }, 500: { ...errorSchema, description: 'Run failed (missing credential, provider error, runtime error)' } },
+      response: { 200: runResultSchema, 400: { ...errorSchema, description: 'Stored agent definition failed validation' }, 404: { ...errorSchema, description: 'Unknown agent id' }, 500: { ...errorSchema, description: 'Run failed (missing credential, provider error, runtime error)' } },
     },
   }, async (req, reply) => {
     const id = decodeURIComponent((req.params as { id: string }).id);
     const agent = db.getAgent(id);
     if (!agent) return reply.code(404).send({ error: `agent not found: ${id}` });
-    const definition = JSON.parse(agent.definition_json as string);
-    const { taskOverride, auditLevel, turnTimeoutMs, approvalMode } = (req.body ?? {}) as { taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict' };
+    // Single hydration path: validate + env-resolve the stored (portable) definition.
+    let definition: AgentDefinition;
+    let definitionHash: string;
+    try {
+      const hydrated = hydrateAgentDefinition(agent.definition_json as string);
+      definition = hydrated.resolved;
+      definitionHash = (agent.definition_hash as string | null) || hydrated.definitionHash;
+    } catch (e) {
+      return reply.code(400).send({ error: `agent ${id} has an invalid definition: ${(e as Error).message}` });
+    }
+    const { taskOverride, auditLevel, turnTimeoutMs, approvalMode, runDir } = (req.body ?? {}) as { taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict'; runDir?: string };
+    const rd = resolveRunDir(runDir);
+    if (rd.error) return reply.code(400).send({ error: rd.error });
     mkdirSync('./runs', { recursive: true });
     try {
       const { registry, tools } = mcpRegistryFromDb();
       // Serialize: chain each run onto the previous one so concurrent POSTs queue cleanly.
-      // Record the agent's registered content hash (integrity), not a source marker.
-      const definitionHash = typeof agent.definition_hash === 'string' && agent.definition_hash.trim()
-        ? agent.definition_hash
-        : validateDefinitionObject(definition).definitionHash;
-      const queued = runQueue.run(() => executeRun({ definition, agentId: id, definitionHash, db, taskOverride, auditLevel, turnTimeoutMs, approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
+      const queued = runQueue.run(() => executeRun({
+        definition, definitionSnapshot: agent.definition_json as string, agentId: id, definitionHash, db,
+        taskOverride, auditLevel, turnTimeoutMs, approvalMode, runDir: rd.runDir, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools,
+        memory: memoryFor(definition, id, taskOverride ?? definition.task.prompt),
+      }));
       return await queued;
     } catch (e) {
       return reply.code(500).send({ error: (e as Error).message });
@@ -101,28 +145,41 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
           auditLevel: { type: 'string', enum: ['minimal', 'default', 'full'], default: 'default' },
           approvalMode: { type: 'string', enum: ['autopilot', 'strict'], description: 'autopilot auto-approves every ask decision (destructive gate still applies); strict denies them.' },
           turnTimeoutMs: { type: 'integer', minimum: 1000, maximum: 21600000, description: 'Per-turn budget in ms (default 2700000 = 45 min)' },
+          runDir: { type: 'string', description: 'Optional working directory for this run (must be inside the server workspace). Reuse the same directory for phase builds.' },
         },
       },
       response: { 200: runResultSchema, 400: { ...errorSchema, description: 'Invalid definition' }, 500: { ...errorSchema, description: 'Run failed' } },
     },
   }, async (req, reply) => {
-    const body = (req.body ?? {}) as { definition?: unknown; taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict' };
+    const body = (req.body ?? {}) as { definition?: unknown; taskOverride?: string; auditLevel?: 'minimal' | 'default' | 'full'; turnTimeoutMs?: number; approvalMode?: 'autopilot' | 'strict'; runDir?: string };
     if (!body.definition) return reply.code(400).send({ error: 'Body must include a definition object' });
-    let definition: import('../core/types.js').AgentDefinition;
+    const rd = resolveRunDir(body.runDir);
+    if (rd.error) return reply.code(400).send({ error: rd.error });
+    let definition: AgentDefinition;
     let definitionHash: string;
+    let portableJson: string;
     try {
       // Same validation path as `npm run dev validate` — schema rules, hash, warnings.
       const parsed = validateDefinitionObject(body.definition);
-      definition = parsed.definition;
-      definitionHash = parsed.definitionHash;
+      // Seal literal secrets before anything is persisted or snapshotted; ${ENV} refs stay portable.
+      const sealed = sealDefinitionSecrets(parsed.definition);
+      const sealedLoad = hydrateDefinitionObject(sealed);
+      definition = sealedLoad.resolved;
+      definitionHash = sealedLoad.definitionHash;
+      portableJson = JSON.stringify(sealed);
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
-    const agentId = db.saveAgent(definition.metadata.name, definition.metadata.version, JSON.stringify(definition), definitionHash);
+    const agentId = db.saveAgent(definition.metadata.name, definition.metadata.version, portableJson, definitionHash);
     mkdirSync('./runs', { recursive: true });
     try {
       const { registry, tools } = mcpRegistryFromDb();
-      const queued = runQueue.run(() => executeRun({ definition, agentId, definitionHash, db, taskOverride: body.taskOverride, auditLevel: body.auditLevel, turnTimeoutMs: body.turnTimeoutMs, approvalMode: body.approvalMode, streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools }));
+      const queued = runQueue.run(() => executeRun({
+        definition, definitionSnapshot: portableJson, agentId, definitionHash, db,
+        taskOverride: body.taskOverride, auditLevel: body.auditLevel, turnTimeoutMs: body.turnTimeoutMs, approvalMode: body.approvalMode, runDir: rd.runDir,
+        streamOut: () => {}, mcpRegistry: registry, mcpRegistryTools: tools,
+        memory: memoryFor(definition, agentId, body.taskOverride ?? definition.task.prompt),
+      }));
       return await queued;
     } catch (e) {
       return reply.code(500).send({ error: (e as Error).message });
@@ -133,7 +190,7 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     schema: {
       tags: ['runs'],
       summary: 'List recent runs',
-      description: 'Newest first, max 100. Filter by `?agentId=`. No response schema: run rows are free-form.',        querystring: { type: 'object', properties: { agentId: { type: 'string', example: 'expense-tracker-dev@1.0.0' } } },
+      description: 'Newest first, max 100. Filter by `?agentId=`. No response schema: run rows are free-form.',        querystring: { type: 'object', properties: { agentId: { type: 'string', example: 'full-stack-engineer@1.0.0' } } },
     },
   }, async (req) => {
     const q = req.query as { agentId?: string };
@@ -164,6 +221,28 @@ export async function registerRunRoutes(app: FastifyInstance, ctx: { db: DbAdapt
     const id = (req.params as { id: string }).id;
     if (!db.getRun(id)) return reply.code(404).send({ error: `run not found: ${id}` });
     return { runId: id, stopped: await abortRun(id) };
+  });
+
+  app.get('/api/runs/:id/definition', {
+    schema: {
+      tags: ['runs'],
+      summary: 'The exact agent definition a run executed',
+      description:
+        'Returns the sealed, portable definition snapshot recorded at run start (secrets redacted). ' +
+        'Hydrating this snapshot reproduces the run configuration exactly, even after the agent was edited or deleted.',
+      response: { 404: { ...errorSchema, description: 'Unknown run id, or a run started before snapshots were recorded' }, 500: { ...errorSchema, description: 'Corrupt definition snapshot' } },
+    },
+  }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const run = db.getRun(id);
+    if (!run) return reply.code(404).send({ error: `run not found: ${id}` });
+    const raw = db.getRunDefinition(id);
+    if (!raw) return reply.code(404).send({ error: `run ${id} has no definition snapshot (snapshots are recorded for runs started after this feature)` });
+    try {
+      return { runId: id, definition_hash: run.definition_hash ?? null, definition: redactedForLog(JSON.parse(raw)) };
+    } catch (e) {
+      return reply.code(500).send({ error: `corrupt definition snapshot: ${(e as Error).message}` });
+    }
   });
 
   app.get('/api/runs/:id/events', {

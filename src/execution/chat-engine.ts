@@ -11,6 +11,10 @@ import {
   DEFAULT_AGENT_ID, PROJECT_AGENT_PREFIX, buildDefaultAgent, buildProjectAgent, resolveProviderRef,
 } from '../agents/default-agent.js';
 import type { ApprovalMode } from '../agents/permissions.js';
+import { hydrateAgentDefinition } from '../agents/loader.js';
+import { resolveMemoryConfig } from '../memory/config.js';
+import { createMemoryRuntime } from '../memory/runtime.js';
+import type { MemoryStore } from '../memory/store.js';
 
 export class ChatEngineError extends Error {
   constructor(message: string, public readonly status = 400) { super(message); this.name = 'ChatEngineError'; }
@@ -40,6 +44,8 @@ export interface ChatEngineDeps {
   /** Audit logs live here (outside project folders): `<auditRoot>/<runId>`. */
   auditRoot: string;
   mcpRegistry: () => { registry: Map<string, McpServerConfig>; tools: Map<string, string[]> };
+  /** Long-term memory store; when present every chat turn recalls and captures. */
+  memoryStore?: MemoryStore;
   maxConcurrent?: number;
 }
 
@@ -62,7 +68,7 @@ export class ChatEngine {
   threadDir(threadId: string): string { return resolve(join(this.d.workspaceRoot, '.chats', threadId)); }
 
   /** Build the concrete definition for a thread's selected agent (default, project profile, or registered). */
-  resolveAgent(thread: Record<string, unknown>): { def: AgentDefinition; agentId: string; project?: ProjectRow } {
+  resolveAgent(thread: Record<string, unknown>): { def: AgentDefinition; agentId: string; project?: ProjectRow; snapshot?: string } {
     const { platform, db } = this.d;
     const projectId = (thread.project_id as string | null) ?? null;
     const project = projectId ? platform.getProject(projectId) : undefined;
@@ -99,8 +105,13 @@ export class ChatEngine {
     }
     const row = db.getAgent(agentId);
     if (!row) throw new ChatEngineError(`agent not found: ${agentId}`, 404);
-    const def = JSON.parse(row.definition_json as string) as AgentDefinition;
-    return { def: this.finish(def, modelOverride), agentId, project };
+    let def: AgentDefinition;
+    try {
+      def = hydrateAgentDefinition(row.definition_json as string).resolved;
+    } catch (e) {
+      throw new ChatEngineError(`agent ${agentId} has an invalid definition: ${(e as Error).message}`, 400);
+    }
+    return { def: this.finish(def, modelOverride), agentId, project, snapshot: row.definition_json as string };
   }
 
   private finish(def: AgentDefinition, modelOverride: string | null): AgentDefinition {
@@ -118,7 +129,7 @@ export class ChatEngine {
     const thread = db.getChatThread(threadId);
     if (!thread) throw new ChatEngineError(`chat thread not found: ${threadId}`, 404);
     if (this.active.has(threadId)) throw new ChatEngineError('This chat is still working on the previous message. Wait for it or press Stop.', 409);
-    const { def, agentId, project } = this.resolveAgent(opts.agentId ? { ...thread, agent_id: opts.agentId } : thread);
+    const { def, agentId, project, snapshot } = this.resolveAgent(opts.agentId ? { ...thread, agent_id: opts.agentId } : thread);
 
     const userMessageId = db.addChatMessage(threadId, { role: 'user', author: 'user', content });
     const firstTitle = /^(New chat|Chat with .*)$/.test(String(thread.title ?? ''));
@@ -127,7 +138,7 @@ export class ChatEngine {
     const turn: ActiveTurn = { abort: new AbortController(), startedAt: Date.now() };
     this.active.set(threadId, turn);
     hub.publish(threadId, { type: 'turn-start', runId: '', agentId, model: def.provider.model });
-    void this.run(threadId, content, def, agentId, project, turn);
+    void this.run(threadId, content, def, agentId, project, turn, snapshot);
     return { userMessageId, agentId, model: def.provider.model };
   }
 
@@ -139,7 +150,7 @@ export class ChatEngine {
     return true;
   }
 
-  private async run(threadId: string, content: string, def: AgentDefinition, agentId: string, project: ProjectRow | undefined, turn: ActiveTurn): Promise<void> {
+  private async run(threadId: string, content: string, def: AgentDefinition, agentId: string, project: ProjectRow | undefined, turn: ActiveTurn, snapshot?: string): Promise<void> {
     const { db, hub, platform, broker } = this.d;
     const thread = db.getChatThread(threadId)!;
     const mode = ((thread.approval_mode as string | null) || platform.getSettings().approvals.chatMode) as ApprovalMode;
@@ -162,8 +173,17 @@ export class ChatEngine {
       const { registry, tools: mcpTools } = this.d.mcpRegistry();
       const workingDirectory = project ? project.path : this.threadDir(threadId);
       if (!project) mkdirSync(workingDirectory, { recursive: true });
+      const memory = this.d.memoryStore
+        ? (() => {
+            const config = resolveMemoryConfig(this.d.memoryStore!, def);
+            return config.enabled
+              ? createMemoryRuntime({ store: this.d.memoryStore!, config, definition: def, agentId, task: content, threadId })
+              : undefined;
+          })()
+        : undefined;
       const result = await executeChatTurn({
         definition: def, agentId, db,
+        definitionSnapshot: snapshot,
         sessionId: (thread.session_id as string | null) ?? undefined,
         sessionIdPrefix: 'chat',
         content,
@@ -175,6 +195,7 @@ export class ChatEngine {
         approvalMode: mode,
         signal: turn.abort.signal,
         mcpRegistry: registry, mcpRegistryTools: mcpTools,
+        memory,
         requestApproval: (info) => {
           turn.runId = info.runId;
           return broker.request({ threadId, runId: info.runId, projectId: project?.id ?? null, tool: info.tool, args: info.args, source: info.source });
