@@ -23,7 +23,8 @@
   },
   "files": [
     "dist",
-    "examples/full-stack-engineer.agent.json"
+    "examples/full-stack-engineer.agent.json",
+    "docs/UAT.md"
   ],
   "dependencies": {
     "@fastify/static": "^10.1.7",

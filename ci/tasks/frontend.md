@@ -15,6 +15,9 @@ You are building the **presentation tier** of a production-grade outdoor-gear st
 
 - `/` — hero with one primary CTA, category tiles (from `/api/categories`), 4-8 featured products, trust/benefit strip, footer with links.
 - `/products` — full catalog. Search (`q`), category filter, min/max price, in-stock toggle, sort select (`featured|priceAsc|priceDesc|nameAsc|newest`), pagination. All filter state is reflected in the URL query and survives reload/back. Result count, skeleton while loading, empty state with a reset action, error banner with retry.
+  - **Data-flow rule:** derive the query values from `useSearchParams()` and put only primitives (`q`, `category`, `minPrice`, `maxPrice`, `inStock`, `sort`, `page`) in the fetch `useEffect` dependency array. Never depend on a newly-created object, array or `URLSearchParams` (for example `[filters]` or `[params]`): that recreates the dependency every render, causes an infinite fetch/re-render loop, and detaches product cards while the verifier clicks them. Memoize derived values if you need an object, or depend on the primitive fields.
+  - **Search behaviour:** the `filter-search` input submits on Enter and through the form's Apply button, updates the URL `q`, and keeps the typed value until the filtered result arrives. Product cards use stable `key={product.id}` values.
+  - **Authenticated checkout:** the checkout form posts through the same-origin `/api` rewrite with `credentials: 'same-origin'` so the httpOnly `nw_token` cookie is sent; after a signed-in customer checks out, `GET /api/orders` must include that order.
 - `/products/[id]` — gallery/fallback, name, price + compare-at price, stock badge, rating summary, quantity stepper, add-to-cart, description, reviews list and a review form for signed-in customers. Breadcrumb. Unknown product → the app's 404 page.
 - `/cart` — line items with quantity +/- and remove, subtotal, shipping estimate, checkout CTA, empty state. Cart badge in the header reflects `itemCount`.
 - `/checkout` — email, shipping address fields, payment method (`CARD` or `COD`), optional coupon, order summary. Inline field errors from the API, disabled submit while posting, then redirect to `/orders/<orderNumber>`. Successful checkout clears the cart badge.
@@ -38,6 +41,8 @@ You are building the **presentation tier** of a production-grade outdoor-gear st
 ## Required `data-testid` hooks (the verifier depends on them)
 
 `product-card`, `product-name`, `product-price`, `add-to-cart`, `cart-count`, `cart-line`, `cart-subtotal`, `checkout-button`, `checkout-email`, `checkout-line1`, `checkout-city`, `checkout-postal`, `checkout-country`, `checkout-place-order`, `order-number`, `order-total`, `login-email`, `login-password`, `login-submit`, `admin-kpi-revenue`, `admin-product-new`, `admin-product-name`, `admin-product-price`, `admin-product-stock`, `admin-product-save`, `admin-order-row`, `admin-order-status`, `filter-search`, `filter-category`, `sort-select`, `page-next`.
+
+Both `/account/login` and `/admin/login` must expose the standard `login-email`, `login-password` and `login-submit` hooks. The admin page may add `admin-login-submit`, but the verifier looks for the standard three on either login page.
 
 Use stable roles/labels as well. Do not rename these hooks.
 

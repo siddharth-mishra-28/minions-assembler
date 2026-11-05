@@ -88,14 +88,35 @@ app_check:
     - source ci/bootstrap.sh
     - npm ci --no-audit --no-fund
     - npx -y playwright@1.64.1 install chromium
+    - npm install -g ./minions-assembler-1.0.0.tgz
   script:
-    - node ci/verify-app.mjs --app app --api-port 8101 --web-port 3301 --out reports/app --mode gitlab
+    # Verify first. If required checks fail, hand the verifier report back to the same
+    # full-stack-engineer definition and verify the repaired workspace again. The job is
+    # green only when the final independent verification passes.
+    - |
+      if node ci/verify-app.mjs --app app --api-port 8101 --web-port 3301 --out reports/app --mode gitlab; then
+        echo "app_check: initial verification passed"
+      else
+        echo "app_check: initial verification failed; asking the same agent to repair"
+        mkdir -p reports/app-initial
+        cp -a reports/app/. reports/app-initial/
+        node ci/repair-app.mjs --app app --report reports/app/report.json --out reports/repair
+        node ci/verify-app.mjs --app app --api-port 8101 --web-port 3301 --out reports/app-final --mode gitlab
+      fi
   artifacts:
     when: always
     paths:
       - reports/
+      - app/
+    exclude:
+      - "app/backend/target/**"
+      - "app/data/**"
+      - "app/**/.audit/**"
+      - "app/frontend/node_modules/**"
+      - "app/frontend/.next/**"
+      - "app/**/*.log"
     expire_in: 1 week
-  timeout: 2h
+  timeout: 3h
 
 cockpit_check:
   stage: cockpit

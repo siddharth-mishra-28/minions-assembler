@@ -61,6 +61,7 @@ Base path `/api`. Request/response JSON. One error envelope:
   → 201 `{orderId,orderNumber,status,subtotal,discount,shipping,tax,total,items:[...]}`.
   - Rules: tax 8.25% of (subtotal - discount); shipping 6.99 unless (subtotal - discount) >= 75 then 0; coupon applied before tax/shipping; empty cart → 400; unknown/expired/ineligible coupon → 400 with field error `couponCode`; insufficient stock → 409.
   - Decrement stock atomically in one transaction. Replaying the same `Idempotency-Key` returns the original order (same `orderNumber`) and never creates a second order.
+  - When the request carries a valid Bearer token or `nw_token` cookie, set `Order.customerId` to that customer so `GET /api/orders` lists the order. Guest checkout without a session keeps `customerId` null.
 - `GET /api/orders/{orderNumber}?email=` → order for the matching email (guest lookup); mismatched email → 403; unknown → 404.
 - `GET /api/orders` (auth) → `{"items":[order]}` for the signed-in customer.
 
@@ -73,6 +74,7 @@ Base path `/api`. Request/response JSON. One error envelope:
 
 - `GET /api/admin/products?page=&size=&q=` → paginated products including inactive.
 - `POST /api/admin/products` → 201 product; `PUT /api/admin/products/{id}` → 200; `DELETE` → 204 (soft delete, `active=false`).
+  - `PUT` is a full replacement: accept the complete product body (`name`, `sku`, `slug`, `description`, `price`, `compareAtPrice`, `stock`, `active`, `categoryId`, `imageUrl`) and update in place. A product's own existing SKU or slug is not a duplicate; only another product's SKU/slug is a 409.
 - `POST /api/admin/categories` → 201; `PUT /api/admin/categories/{id}` → 200; `DELETE` → 204, or 409 when products reference it.
 - `GET /api/admin/orders?status=&page=&size=` → paginated orders.
 - `PATCH /api/admin/orders/{id}/status` `{status}` → 200. Allowed transitions: `PLACED→PACKED`, `PACKED→SHIPPED`, `SHIPPED→DELIVERED`, and cancel from `PLACED|PACKED`. Invalid transition → 409. Cancelling restores stock.

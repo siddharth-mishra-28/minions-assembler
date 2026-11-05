@@ -96,7 +96,7 @@ The package is designed to be published and installed as one unit:
 npm pack                      # builds dist/ + dist/web, then creates the tarball
 npm install -g ./minions-assembler-1.0.0.tgz
 minions-assembler --version    # 1.0.0
-minions-assembler serve        # SPA + API + Swagger + legacy UI, one port
+minions-assembler serve        # SPA + API + Swagger, one port
 ```
 
 What `serve` exposes on a single origin:
@@ -139,10 +139,10 @@ Every UI action is a public API call. The same endpoints work with `curl`, a scr
 # Register a definition
 curl -sS -X POST http://127.0.0.1:3100/api/agents \
   -H 'content-type: application/json' \
-  -d '{"definitionPath":"./examples/full-stack-developer.agent.json"}'
+  -d '{"definitionPath":"./examples/full-stack-engineer.agent.json"}'
 
 # Execute it (blocks until the turn finishes)
-curl -sS -X POST 'http://127.0.0.1:3100/api/agents/full-stack-developer%401.0.0/runs' \
+curl -sS -X POST 'http://127.0.0.1:3100/api/agents/full-stack-engineer%401.0.0/runs' \
   -H 'content-type: application/json' \
   -d '{"taskOverride":"Build the feature described in TASK.md","approvalMode":"autopilot","turnTimeoutMs":7200000}'
 ```
@@ -243,7 +243,7 @@ minions-assembler chat send --agent my-agent@1.0.0 --thread <id> --content "Revi
 minions-assembler memory stats
 minions-assembler memory search "flaky maven test"
 minions-assembler memory lesson --text "Run mvn -q -B test before packaging" --trigger "maven package"
-minions-assembler memory improve --dataset agent:full-stack-developer
+minions-assembler memory improve --dataset agent:full-stack-engineer
 ```
 
 ### Serve
@@ -296,7 +296,7 @@ agent:
 
 ## Agent definitions (schema v1.0)
 
-A definition is a single JSON file. The bundled schema lives in `src/schema/agent-definition.schema.json`; the CLI and API validate against it. The one shipped example is [`examples/full-stack-developer.agent.json`](examples/full-stack-developer.agent.json).
+A definition is a single JSON file. The bundled schema lives in `src/schema/agent-definition.schema.json`; the CLI and API validate against it. The one shipped example is [`examples/full-stack-engineer.agent.json`](examples/full-stack-engineer.agent.json).
 
 ```jsonc
 {
@@ -391,7 +391,7 @@ Inspect it:
 ```bash
 minions-assembler memory stats
 minions-assembler memory search "postgres migration"
-curl -sS 'http://127.0.0.1:3100/api/memory/graph?dataset=agent:full-stack-developer'
+curl -sS 'http://127.0.0.1:3100/api/memory/graph?dataset=agent:full-stack-engineer'
 ```
 
 or `GET /api/memory/stats`, `/api/memory/graph`, `/api/memory/lessons`.
@@ -448,7 +448,7 @@ src/
   execution/     headless runner, chat runner/engine/hub, approvals, retention,
                  usage proxy
   http/          Fastify route groups (system, agents, runs, mcp, chat,
-                 platform, memory, ui), security, static SPA serving
+                 platform, memory), security, static SPA serving
   mcp/           MCP client/probe/OAuth
   memory/        schema, store, code graph, recall, capture, lessons, tools
   store/         SQLite adapter, migrations, platform store
@@ -470,6 +470,26 @@ npm pack --dry-run            # inspect the exact tarball contents
 npm pack                      # build is run by prepack
 npm publish --access public   # publish the single artifact (when you are ready)
 ```
+
+Only the root package is published. `web/package.json` is `private`, and the root `files`
+whitelist ships just `dist/` (including `dist/web`) plus the one example definition. There is
+no second package and no separate UI artifact to keep in sync.
+
+### Verified acceptance
+
+All four execution modes were exercised end to end against the generated three-tier
+Northwind Outfitters app (Spring Boot + H2 + Next.js App Router): the browser cockpit,
+the REST API, the packaged CLI and a real GitLab pipeline. The full matrix, run IDs,
+repairs and evidence paths are in [`docs/UAT.md`](docs/UAT.md). Summary:
+
+| Mode | Result |
+| --- | --- |
+| Cockpit (real Chromium, 25 flows) | PASS 25/25 |
+| CLI generation + independent verifier | PASS, 0 required failures |
+| REST API generation + verifier | PASS, 0 required failures |
+| UI generation (browser-driven) + verifier | PASS, 0 required failures |
+| GitLab pipeline (package, two generate jobs) | Artifact built; verification passed after documented repairs |
+| Installed npm tarball (CLI + server UI + API) | PASS — `PACKAGED_OK`, `API_PACKAGED_OK`, `UI_PACKAGED_OK` from the final rebuilt tarball |
 
 The release contract checked by the suite:
 

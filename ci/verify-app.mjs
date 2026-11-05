@@ -249,7 +249,7 @@ async function apiSuite() {
       cartId, email: customerEmail,
       shippingAddress: { line1: '1 Test Way', city: 'Portland', state: 'OR', postalCode: '97201', country: 'US' },
       paymentMethod: 'CARD',
-    });
+    }, auth(customerToken));
     record('API checkout empty cart 400', empty.status === 400, `status ${empty.status} ${empty.text.slice(0, 140)}`);
 
     if (checkoutProduct) {
@@ -263,7 +263,7 @@ async function apiSuite() {
         cartId, email: customerEmail,
         shippingAddress: { line1: '1 Test Way', line2: '', city: 'Portland', state: 'OR', postalCode: '97201', country: 'US' },
         paymentMethod: 'CARD', couponCode: 'WELCOME10',
-      }, { 'idempotency-key': idem });
+      }, { 'idempotency-key': idem, ...auth(customerToken) });
       orderNumber = checkout.body?.orderNumber ?? '';
       orderTotal = Number(checkout.body?.total ?? 0);
       record('API checkout', checkout.status === 201 && Boolean(orderNumber) && orderTotal > 0,
@@ -274,7 +274,7 @@ async function apiSuite() {
           cartId, email: customerEmail,
           shippingAddress: { line1: '1 Test Way', line2: '', city: 'Portland', state: 'OR', postalCode: '97201', country: 'US' },
           paymentMethod: 'CARD', couponCode: 'WELCOME10',
-        }, { 'idempotency-key': idem });
+        }, { 'idempotency-key': idem, ...auth(customerToken) });
         record('API checkout idempotent replay', [200, 201].includes(replay.status) && replay.body?.orderNumber === orderNumber,
           `status ${replay.status} order ${replay.body?.orderNumber}`);
 
@@ -323,7 +323,12 @@ async function apiSuite() {
     record('API admin create product', created.status === 201 && Boolean(newId), `status ${created.status} ${created.text.slice(0, 160)}`);
 
     if (newId) {
-      const upd = await api('PUT', `/api/admin/products/${encodeURIComponent(newId)}`, { price: 119.5, stock: 7, active: true }, auth(adminToken));
+      // PUT is a full replacement in the contract; send the complete product with the changed price/stock.
+      const upd = await api('PUT', `/api/admin/products/${encodeURIComponent(newId)}`, {
+        name: productName, sku: `VER-${uniq}`, slug: `verifier-tent-${uniq}`,
+        description: 'Created by the acceptance verifier.', price: 119.5, stock: 7,
+        categoryId, active: true, imageUrl: null,
+      }, auth(adminToken));
       record('API admin update product', [200, 204].includes(upd.status), `status ${upd.status}`);
       const storefront = await api('GET', '/api/products?q=Verifier');
       record('API created product visible in catalog', (storefront.body?.items ?? []).some((p) => p.name === productName), `items ${storefront.body?.items?.length}`, false);
@@ -350,10 +355,15 @@ async function apiSuite() {
 
     if (orderNumber && (orders.body?.items ?? []).length) {
       const row = (orders.body.items ?? []).find((o) => o.orderNumber === orderNumber) ?? orders.body.items[0];
-      const packed = await api('PATCH', `/api/admin/orders/${encodeURIComponent(row.id)}/status`, { status: 'PACKED' }, auth(adminToken));
-      record('API admin order status PACKED', [200, 204].includes(packed.status), `status ${packed.status} ${packed.text.slice(0, 120)}`);
-      const invalid = await api('PATCH', `/api/admin/orders/${encodeURIComponent(row.id)}/status`, { status: 'DELIVERED' }, auth(adminToken));
-      record('API admin invalid transition 409', invalid.status === 409, `status ${invalid.status}`, false);
+      const rowId = row.orderId ?? row.id;
+      if (!rowId) {
+        record('API admin order id present', false, `row ${JSON.stringify(row).slice(0, 200)}`);
+      } else {
+        const packed = await api('PATCH', `/api/admin/orders/${encodeURIComponent(rowId)}/status`, { status: 'PACKED' }, auth(adminToken));
+        record('API admin order status PACKED', [200, 204].includes(packed.status), `status ${packed.status} ${packed.text.slice(0, 120)}`);
+        const invalid = await api('PATCH', `/api/admin/orders/${encodeURIComponent(rowId)}/status`, { status: 'DELIVERED' }, auth(adminToken));
+        record('API admin invalid transition 409', invalid.status === 409, `status ${invalid.status}`, false);
+      }
     }
   }
 }
@@ -369,32 +379,87 @@ async function browserSuite() {
   const shot = async (name) => { try { await page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true }); } catch { /* ignore */ } };
   const tid = (id) => page.getByTestId(id).first();
   const visible = async (id) => tid(id).isVisible().catch(() => false);
+  // Next.js hydrates after domcontentloaded; filling before that lets React reset the
+  // input or leaves the submit handler unattached. Wait for quiet, then verify the value
+  // and retry once hydration has completed.
+  const goto = async (path) => {
+    await page.goto(WEB + path, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
+    await page.waitForTimeout(250);
+  };
   const fill = async (id, value, label) => {
-    const byId = tid(id);
-    if (await byId.isVisible().catch(() => false)) { await byId.fill(value); return true; }
-    if (label) { const byLabel = page.getByLabel(label).first(); if (await byLabel.isVisible().catch(() => false)) { await byLabel.fill(value); return true; } }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const byId = tid(id);
+      if (await byId.isVisible().catch(() => false)) {
+        await byId.fill(value).catch(() => {});
+        if ((await byId.inputValue().catch(() => '')) === value) return true;
+      }
+      if (label) {
+        const byLabel = page.getByLabel(label).first();
+        if (await byLabel.isVisible().catch(() => false)) {
+          await byLabel.fill(value).catch(() => {});
+          if ((await byLabel.inputValue().catch(() => '')) === value) return true;
+        }
+      }
+      await page.waitForTimeout(400);
+    }
     return false;
+  };
+  const submitUntil = async (button, navigated) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (navigated()) return true;
+      if (await button.isVisible().catch(() => false)) await button.click().catch(() => {});
+      await page.waitForTimeout(700);
+      if (navigated()) return true;
+    }
+    return navigated();
   };
 
   try {
-    await page.goto(WEB + '/', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1200);
+    await goto('/');
+    await page.waitForTimeout(900);
     const cards = await page.getByTestId('product-card').count();
     record('UI home renders', cards >= 1 || await page.locator('h1').count() > 0, `cards ${cards}`);
     record('UI home product grid', cards >= 1, `cards ${cards}`, false);
     await shot('01-home');
 
-    await page.goto(WEB + '/products', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1200);
+    await goto('/products');
+    await page.waitForTimeout(900);
     const catalogCards = await page.getByTestId('product-card').count();
     record('UI catalog renders products', catalogCards >= 1, `cards ${catalogCards}`);
     if (await visible('filter-search')) {
+      const initialCards = await page.getByTestId('product-card').count();
       const name = (await tid('product-name').first().textContent().catch(() => '')) ?? '';
       const term = name.trim().split(/\s+/)[0] || 'a';
+      // Wait for the filtered request, then for the result count to leave its loading state.
+      // Clicking a search button is a fallback for forms that do not submit on Enter.
+      const filteredResponse = page.waitForResponse((r) => {
+        try {
+          const u = new URL(r.url());
+          return u.pathname.endsWith('/api/products') && u.searchParams.get('q') === term;
+        } catch { return false; }
+      }, { timeout: 15_000 }).catch(() => null);
       await tid('filter-search').fill(term);
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(1200);
-      record('UI search filters catalog', await page.getByTestId('product-card').count() >= 1, `term ${term}`);
+      let sawFilterRequest = Boolean(await filteredResponse);
+      if (!sawFilterRequest) {
+        const apply = page.locator('form[role="search"] button[type="submit"]').first();
+        if (await apply.isVisible().catch(() => false)) {
+          await apply.click().catch(() => {});
+          sawFilterRequest = Boolean(await page.waitForResponse((r) => {
+            try { return new URL(r.url()).searchParams.get('q') === term; } catch { return false; }
+          }, { timeout: 8_000 }).catch(() => null));
+        }
+      }
+      await page.waitForFunction(() => {
+        const el = document.querySelector('[data-testid="results-count"]');
+        return Boolean(el && !/loading/i.test(el.textContent ?? ''));
+      }, null, { timeout: 15_000 }).catch(() => {});
+      await page.waitForTimeout(400);
+      const filteredCards = await page.getByTestId('product-card').count();
+      const urlHasQuery = new URL(page.url()).searchParams.get('q') === term;
+      record('UI search filters catalog', filteredCards >= 1 && filteredCards <= initialCards && (sawFilterRequest || urlHasQuery),
+        `term ${term} cards ${initialCards}->${filteredCards} request ${sawFilterRequest} url ${page.url()}`);
     } else {
       record('UI search filters catalog', false, 'filter-search missing');
     }
@@ -405,9 +470,15 @@ async function browserSuite() {
     }
     await shot('02-catalog');
 
-    await page.goto(WEB + '/products', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1000);
-    await tid('product-card').first().click();
+    await goto('/products');
+    await page.waitForTimeout(700);
+    // Navigate by the card's link instead of clicking the card container: the container
+    // is replaced when the catalog revalidates, which detached the element mid-click.
+    const firstCard = tid('product-card').first();
+    const cardLink = firstCard.locator('a').first();
+    const href = await cardLink.getAttribute('href').catch(() => null);
+    if (href) await page.goto(new URL(href, WEB).toString(), { waitUntil: 'domcontentloaded' });
+    else await cardLink.click();
     await page.waitForTimeout(1200);
     record('UI product detail', await page.locator('h1').count() > 0, page.url());
     await shot('03-product');
@@ -420,8 +491,8 @@ async function browserSuite() {
       record('UI add to cart', false, 'add-to-cart missing');
     }
 
-    await page.goto(WEB + '/cart', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1000);
+    await goto('/cart');
+    await page.waitForTimeout(800);
     record('UI cart renders line', await page.getByTestId('cart-line').count() >= 1, `lines ${await page.getByTestId('cart-line').count()}`);
     await shot('04-cart');
 
@@ -429,8 +500,9 @@ async function browserSuite() {
       await tid('checkout-button').click();
       await page.waitForTimeout(1500);
     } else {
-      await page.goto(WEB + '/checkout', { waitUntil: 'domcontentloaded' });
+      await goto('/checkout');
     }
+    await page.waitForTimeout(600);
     const email = `ui-${Date.now().toString(36)}@example.com`;
     await fill('checkout-email', email, /email/i);
     await fill('checkout-line1', '42 Verifier Lane', /address|line 1/i);
@@ -451,26 +523,40 @@ async function browserSuite() {
       record('UI checkout completes', false, 'checkout-place-order missing');
     }
 
-    await page.goto(WEB + '/account/login', { waitUntil: 'domcontentloaded' });
-    await fill('login-email', 'alex@example.com', /email/i);
-    await fill('login-password', 'Customer123!', /password/i);
-    if (await visible('login-submit')) { await tid('login-submit').click(); await page.waitForTimeout(1800); }
-    record('UI customer login', !/\/account\/login/.test(page.url()) || !(await visible('login-submit')), page.url());
-    await page.goto(WEB + '/account/orders', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1000);
+    await goto('/account/login');
+    const customerEmailFilled = await fill('login-email', 'alex@example.com', /email/i);
+    const customerPasswordFilled = await fill('login-password', 'Customer123!', /password/i);
+    if (await visible('login-submit')) {
+      await submitUntil(tid('login-submit'), () => !/\/account\/login/.test(page.url()));
+    }
+    record('UI customer login', (customerEmailFilled && customerPasswordFilled) && !/\/account\/login/.test(page.url()), page.url());
+    await goto('/account/orders');
+    await page.waitForTimeout(800);
     record('UI account orders page', await page.locator('body').innerText().then((t) => t.length > 50), 'rendered', false);
 
-    await page.goto(WEB + '/admin/login', { waitUntil: 'domcontentloaded' });
-    await fill('login-email', 'admin@northwind.test', /email/i);
-    await fill('login-password', 'Admin123!', /password/i);
-    if (await visible('login-submit')) { await tid('login-submit').click(); await page.waitForTimeout(2000); }
-    await page.goto(WEB + '/admin', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
-    record('UI admin dashboard', await visible('admin-kpi-revenue') || (await page.locator('body').innerText()).toLowerCase().includes('revenue'), page.url());
+    await goto('/admin/login');
+    await page.waitForTimeout(500);
+    const adminEmailFilled = await fill('login-email', 'admin@northwind.test', /email/i);
+    const adminPasswordFilled = await fill('login-password', 'Admin123!', /password/i);
+    const adminSubmit = (await visible('login-submit'))
+      ? tid('login-submit')
+      : (await visible('admin-login-submit'))
+        ? tid('admin-login-submit')
+        : page.getByRole('button', { name: /sign in|log in/i }).first();
+    record('UI admin login form', adminEmailFilled && adminPasswordFilled, `email ${adminEmailFilled} password ${adminPasswordFilled}`);
+    await submitUntil(adminSubmit, () => new URL(page.url()).pathname === '/admin');
+    await goto('/admin');
+    let adminReady = false;
+    for (let i = 0; i < 12 && !adminReady; i++) {
+      await page.waitForTimeout(500);
+      adminReady = await visible('admin-kpi-revenue')
+        || (await page.locator('body').innerText()).toLowerCase().includes('revenue');
+    }
+    record('UI admin dashboard', adminReady, page.url());
     await shot('07-admin');
 
-    await page.goto(WEB + '/admin/products', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1200);
+    await goto('/admin/products');
+    await page.waitForTimeout(900);
     let createdName = '';
     if (await visible('admin-product-new')) {
       await tid('admin-product-new').click();
@@ -494,16 +580,16 @@ async function browserSuite() {
       if (await visible('admin-product-save')) await tid('admin-product-save').click();
       await page.waitForTimeout(1800);
       record('UI admin creates product', true, createdName);
-      await page.goto(`${WEB}/products?q=${encodeURIComponent(createdName)}`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(1200);
+      await goto(`/products?q=${encodeURIComponent(createdName)}`);
+      await page.waitForTimeout(900);
       record('UI created product visible', (await page.getByTestId('product-card').count()) >= 1, `cards ${await page.getByTestId('product-card').count()}`);
       await shot('09-admin-product-storefront');
     } else {
       record('UI admin creates product', false, 'admin-product-new missing');
     }
 
-    await page.goto(WEB + '/admin/orders', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1200);
+    await goto('/admin/orders');
+    await page.waitForTimeout(900);
     record('UI admin orders page', await page.getByTestId('admin-order-row').count() >= 0, `rows ${await page.getByTestId('admin-order-row').count()}`, false);
     await shot('10-admin-orders');
   } finally {
