@@ -18,7 +18,7 @@ and the task files in [`ci/tasks/`](../ci/tasks).
 | CLI | Packaged CLI, `run --output-format json` | `run_f7d566bb` (47 min) + `run_93cb1231` (31 min) | `ci/verify-app.mjs` | **PASS**, 70/71 checks, 0 required failures |
 | REST API | `POST /api/agent-definitions/runs` on a server | `run_bd82723e` + `run_efb207f5` | `ci/verify-app.mjs` | **PASS**, 70/71 checks, 0 required failures |
 | UI | Chromium drove New run → inline definition → run detail | `run_849f61f0` + `run_c92636b2` | `ci/verify-app.mjs` | **PASS**, 70/71 checks, 0 required failures |
-| GitLab CI | Pipeline `3028042462` on `uat/four-mode-20261104-2136` | `run_a68aabec` (70 min) + `run_f171fa99` (34 min) | Pipeline `app_check` + repaired artifact re-verified locally | Artifact **built**; verification passed after documented repairs |
+| GitLab CI | Pipeline `3032134135` on `release/clean-app-check` | `run_3d9f9023` (46 min) + `run_1c6b25ca` (41 min) | Pipeline `app_check` **72/72** + `cockpit_check` **11/11** | **PASS**, first pass, no repair |
 
 The single non-required warning in every verifier run is identical: a guest checkout placed
 with an e-mail address is not attached to that customer's authenticated order history. The
@@ -66,8 +66,8 @@ exercised independently, all against the real Mimo provider:
    admin orders;
 6. writes `report.json`, `report.md` and screenshots.
 
-No required check failed for CLI, API, UI or the repaired GitLab artifact (70 of 71 checks
-passed); the single non-required warning is described above.
+No required check failed in any mode: the three local modes each passed 70 of 71 checks and the
+final GitLab pipeline passed 72 of 72. The single non-required warning is described above.
 
 ## Repairs made after generation
 
@@ -86,11 +86,33 @@ workspaces (never in the packaged source) and are disclosed here for honesty:
 | UI | Checkout did not pass the guest e-mail to the confirmation route | redirect now includes `?email=` |
 | GitLab | Catalog effect depended on a new `filters` object each render, causing an infinite refetch/re-render loop | depend on the primitive filter fields |
 | GitLab | Admin login used non-standard test ids | standard test ids |
+| GitLab | Checkout redirected to `/orders/{number}` without the guest e-mail, so the confirmation lookup returned 403 and the page showed "Order not found" | phase-B contract and repair rules now require `?email=` from the checkout form; the regenerated app passes 72/72 |
 
 The verifier itself was also hardened for the contract: `PUT /api/admin/products/:id` now sends
-a complete product, and admin order transitions accept the `orderId` field. The GitLab pipeline
-job `app_check` ran the earlier committed verifier against an unrepaired generation, so it
-reported 58/62; the same downloaded GitLab artifact passed 70/71 after the two app repairs above.
+a complete product, and admin order transitions accept the `orderId` field. The earlier GitLab
+pipeline `3030805066` was red because the committed verifier ran against an unrepaired
+generation (59/62) and the repair round then surfaced the missing guest e-mail on the checkout
+redirect (71/72). Fixing the phase-B contract — not the verifier — resolved it: the same
+downloaded artifact plus a one-line redirect fix passes 72/72 locally, and the fresh pipeline
+below passes in GitLab itself.
+
+## Final GitLab pipeline (2026-11-05)
+
+Pipeline [`3032134135`](https://gitlab.com/org_rzx/agent-platform/-/pipelines/3032134135) on
+branch `release/clean-app-check`, commit `3b1ae1f`, ran the cleaned tree end to end:
+
+| Job | Result | Evidence |
+| --- | --- | --- |
+| `package` | PASS, 104 s | one tarball; `dist/web/index.html` and the example present; no `src/ui` / `routes-ui` |
+| `generate_backend` | PASS, 45.8 min | `run_3d9f9023` |
+| `generate_frontend` | PASS, 41.2 min | `run_1c6b25ca` |
+| `app_check` | PASS, 188 s | **72/72** checks, 0 required failures, first pass (no repair round) |
+| `cockpit_check` | PASS, 62 s | **11/11** smoke checks; `/ui` and `/ui/dashboard` return 404 |
+
+The verifier compared every layer of the generated store: 61 backend tests, packaged jar on a
+fresh H2 file, the full HTTP contract, the production Next.js build, and Chromium through
+storefront → product → cart → checkout (order `NW-MW3OC93L-2451`) → customer login → admin login
+→ dashboard → create product → storefront visibility → admin orders.
 
 ## Evidence map
 
@@ -106,11 +128,12 @@ with the commands in this file. During acceptance the reports lived at:
 | API verifier report + screenshots | `evidence/uat-20261104/reports/api/` |
 | UI verifier report + screenshots | `evidence/uat-20261104/reports/ui/` |
 | GitLab verifier report + screenshots | `evidence/uat-20261104/reports/gitlab/` |
-| GitLab pipeline artifacts (package, generated app, reports) | `evidence/gitlab/pipeline-3028042462/*.zip` |
+| GitLab pipeline artifacts (package, generated app, reports) | job artifacts of pipeline [`3032134135`](https://gitlab.com/org_rzx/agent-platform/-/pipelines/3032134135), retained one week |
 | Generation logs and run IDs | `evidence/uat-20261104/logs/` |
 
-Pipeline: <https://gitlab.com/siddharthmishra28/minions-assembler/-/pipelines/3028042462>
-(project `86769878`). Its artifacts expire one week after the run.
+Pipeline: <https://gitlab.com/org_rzx/agent-platform/-/pipelines/3032134135> (project
+`org_rzx/agent-platform`, branch `release/clean-app-check`). Its artifacts expire one week after
+the run.
 
 ## Build, verify and publish locally
 
