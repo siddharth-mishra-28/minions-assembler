@@ -66,6 +66,10 @@ ${failureList}
   treat the product's own SKU or slug as a duplicate.
 - Checkout with a valid Bearer token or nw_token cookie must set Order.customerId so GET /api/orders
   lists the order. Guest checkout keeps customerId null.
+- After a successful checkout the confirmation redirect must keep the guest email:
+  router.push(\`/orders/\${orderNumber}?email=\${encodeURIComponent(email)}\`). The order page must read
+  the email query parameter and send it to GET /api/orders/{orderNumber}?email=...; without it a
+  guest order lookup returns 403 and the page shows "Order not found" with no order-number.
 - Do not modify ci/verify-app.mjs, ci/repair-app.mjs or any verifier task. Do not weaken tests or
   delete checks. Do not leave servers running.
 - Before finishing, run \`mvn -q -B test\` in backend/ (0 failures, >= 25 tests) and
