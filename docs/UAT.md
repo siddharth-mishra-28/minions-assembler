@@ -37,9 +37,10 @@ One tarball is produced by `npm pack` (which runs the full `prepack` build):
   `/ui/dashboard` return **404** from the installed package while `/`, `/api/status`,
   `/docs/` and `/openapi.json` return **200**.
 
-The final rebuild made after the cleanup is 217 files, 679.6 kB packed (2.6 MB unpacked),
-shasum `d628dce55f91feeb417f2cecee9d0c06f6236f97`. It was installed into a clean prefix and
-exercised independently, all against the real Mimo provider:
+The final rebuild made after the cleanup is 217 files, about 680 kB packed (2.6 MB unpacked).
+The shasum changes with every documentation edit, so read it from `npm pack --dry-run` instead
+of pinning it here. That tarball was installed into a clean prefix and exercised independently,
+all against the real Mimo provider:
 
 - `minions-assembler --version` → `1.0.0`;
 - `minions-assembler validate --agentDefinition examples/full-stack-engineer.agent.json` →
