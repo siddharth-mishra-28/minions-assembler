@@ -1,24 +1,51 @@
+# dependencies
 node_modules/
+
+# build output (npm run build -> tsc + Vite)
 dist/
+*.tsbuildinfo
+
+# runtime data: SQLite database, audit log JSONL and server state
 data/
+.minion/
+*.db-shm
+*.db-wal
+
+# local secrets and machine-specific config
 .env
+.env.*
 .freebuff/
 
-# runtime artifacts — server audit log
-.minion/
-
-# run/chat transcripts and per-run workflow folders (runtime output)
+# run/chat transcripts, workflow folders and agent workspaces (runtime output)
 runs/
 run_*/
 .chats/
 workflow_*/
-
-# agent working directories (runtime output from coding runs)
+workspace/
 workspace-*/
+
+# CI and verification output: generated apps, reports, dependency caches
+app/
+reports/
+tools/
+.npm/
+.npm-global/
+.m2/
+.tmp/
 
 # acceptance evidence, backups and smoke output
 evidence/
 backup/
 .smoke/
-*.log
+
+# packaged artifacts and archives
 *.tgz
+*.tar.gz
+*.zip
+
+# logs, coverage and editor/OS noise
+*.log
+npm-debug.log*
+coverage/
+.DS_Store
+Thumbs.db

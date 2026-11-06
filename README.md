@@ -90,7 +90,7 @@ The server binds `127.0.0.1` by default. See [Security](#security-and-operations
 
 ## One artifact: the npm package
 
-The package is designed to be published and installed as one unit:
+The package is designed to be published and installed as one unit. Until the first `npm publish`, install the tarball directly with `npm install -g ./minions-assembler-1.0.0.tgz`; after that the `npm install -g minions-assembler` shown in the quick start works as written.
 
 ```bash
 npm pack                      # builds dist/ + dist/web, then creates the tarball
@@ -108,7 +108,7 @@ What `serve` exposes on a single origin:
 | `/docs` | Swagger UI |
 | `/openapi.json` | OpenAPI document |
 
-The tarball contains `dist/`, the bundled web build (`dist/web`) and one example agent (`examples/full-stack-engineer.agent.json`). It does **not** contain tests, source, data, runs or local evidence. `prepack` runs the full build automatically, so `npm pack` always ships a matching UI.
+The tarball contains `dist/` (including the bundled web build in `dist/web`), the one example agent (`examples/full-stack-engineer.agent.json`), the acceptance record (`docs/UAT.md`), plus `README.md`, `LICENSE` and `package.json`, which npm always includes. It does **not** contain tests, source, `web/`, data, runs, CI scripts or local evidence. `prepack` runs the full build automatically, so `npm pack` always ships a UI that matches the server.
 
 ---
 
@@ -178,13 +178,13 @@ curl -N http://127.0.0.1:3100/api/chat/threads/<threadId>/events
 
 | Group | Endpoints |
 | --- | --- |
-| System | `GET /api/status`, `/api/bootstrap`, `/api/logs`, `/api/metrics`, `/api/metrics/daily` |
-| Agents | `GET/POST /api/agents`, `GET/PUT/DELETE /api/agents/:id`, `POST /api/agents/validate`, `POST /api/agents/import`, `GET /api/agents/:id/definition`, drafts, Elaborate, templates |
-| Runs | `POST /api/agents/:id/runs`, `POST /api/agent-definitions/runs`, `GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/definition`, `GET /api/runs/:id/events`, `POST /api/runs/:id/stop` |
-| Chat | `GET/POST /api/chat/threads`, `GET/PATCH/DELETE /api/chat/threads/:id`, `POST .../messages`, `POST .../cancel`, `GET .../events`, `GET .../stream`, `GET .../export` |
-| Platform | `GET/POST /api/providers`, `GET/PATCH/DELETE /api/providers/:id`, `POST /api/providers/:id/default`, `POST /api/providers/:id/test`, `GET/POST /api/projects`, `GET /api/settings`, `PUT /api/settings`, `GET /api/approvals`, `POST /api/approvals/:id`, `GET/PUT /api/retention` |
-| MCP | `GET/POST /api/mcp`, `GET/DELETE /api/mcp/:name`, `POST /api/mcp/probe`, `POST /api/mcp/:name/tools`, OAuth start/callback/status |
-| Memory | `GET/PUT /api/memory/config`, `GET /api/memory/stats`, `/datasets`, `/graph`, `/nodes`, `/nodes/:id`, `/episodes`, `/search`, `/lessons`, `POST /api/memory/index`, `/improve`, `/forget`, `/promote`, `/feedback` |
+| System | `GET /api/status`, `/api/bootstrap`, `/api/logs`, `/api/metrics`, `/api/metrics/daily`, `/api/builtin-tools`, `/api/persona/default-system-prompt`, `/api/workspace/instruction-files`, `/api/fs/browse`, `/api/sessions`, `/api/sessions/:sid` |
+| Agents | `GET/POST /api/agents`, `GET/PUT/DELETE /api/agents/:id`, `POST /api/agents/validate`, `POST /api/agents/import`, `GET /api/agents/:id/definition`, `POST /api/agents/draft`, `GET /api/agents/drafts`, `POST /api/agents/elaborate`, `GET /api/templates/default`, `POST /api/templates/upload` |
+| Runs | `POST /api/agents/:id/runs`, `POST /api/agent-definitions/runs`, `GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/definition`, `GET /api/runs/:id/events`, `GET /api/runs/:id/stream`, `POST /api/runs/:id/stop`, `GET /api/audit/runs`, `GET /api/audit/runs/:id/export` |
+| Chat | `GET/POST /api/chat/threads`, `GET/PATCH/DELETE /api/chat/threads/:id`, `POST .../messages`, `POST .../cancel`, `GET .../events`, `GET .../stream`, `GET .../export`, `GET /api/chat/agents` |
+| Platform | `GET/POST /api/providers`, `GET/PATCH/DELETE /api/providers/:id`, `POST /api/providers/:id/default`, `POST /api/providers/:id/test`, `GET /api/providers/models`, `GET /api/providers/:id/models`, `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`, `GET /api/projects/:id/agents`, `GET /api/settings`, `PATCH /api/settings`, `GET /api/approvals`, `POST /api/approvals/:id`, `GET /api/retention`, `POST /api/retention/purge`, `GET/POST /api/credentials`, `DELETE /api/credentials/:name` |
+| MCP | `GET/POST /api/mcp`, `GET/DELETE /api/mcp/:name`, `POST /api/mcp/probe`, `POST /api/mcp/:name/tools`, `POST /api/mcp/oauth/start`, `GET /api/mcp/oauth/callback`, `GET /api/mcp/oauth/status` |
+| Memory | `GET/PUT /api/memory/config`, `GET /api/memory/stats`, `/datasets`, `/graph`, `/nodes`, `/episodes`, `POST /api/memory/nodes`, `DELETE /api/memory/nodes/:id`, `POST /api/memory/search`, `POST /api/memory/lessons`, `POST /api/memory/index`, `/improve`, `/forget`, `/promote`, `/feedback` |
 
 All errors are `{ "error": "…" }`. Validation failures add `fieldErrors`.
 
@@ -234,7 +234,9 @@ Exit codes: **0** done · **2** validation · **3** runtime/provider · **4** pe
 ### Chat from the terminal
 
 ```bash
-minions-assembler chat send --agent my-agent@1.0.0 --thread <id> --content "Review the diff"
+minions-assembler chat create --agent full-stack-engineer@1.0.0 --title "Code review"
+minions-assembler chat send --thread <threadId> --message "Review the diff"
+minions-assembler chat read --thread <threadId>
 ```
 
 ### Memory
@@ -251,6 +253,21 @@ minions-assembler memory improve --dataset agent:full-stack-engineer
 ```bash
 minions-assembler serve --port 3100 --db ./data/minion.db
 ```
+
+### Full command reference
+
+| Command | What it does |
+| --- | --- |
+| `validate --agentDefinition <file>` | Schema + rule check, prints `name@version` and hash; exit 2 on failure. |
+| `run --agentDefinition <file> [--task …]` | Headless run (see flags above). |
+| `import-md --file <profile.agent.md> [--no-register]` | Map a Markdown agent profile (frontmatter + body) to schema v1.0 and optionally register it. |
+| `list` / `show <id>` / `history [--agentId <id>]` | Registered agents, one agent's sealed definition, and run history, as JSON. |
+| `chat create/list/send/read` | Persistent multi-turn threads against a registered agent. |
+| `mcp register --name <n> --config <json\|path> [--probe]`, `mcp-list` | Register and inspect MCP servers without the UI. |
+| `memory index/search/recall/stats/lesson/improve/promote/forget` | Build the code graph, query recall, record lessons and curate datasets. |
+| `serve --port <n> --db <path>` | Cockpit + REST API + Swagger from one process. |
+
+Every command accepts `--db <path>` and defaults to `./data/minion.db`, so the CLI and the server can share one database.
 
 ---
 
@@ -409,6 +426,20 @@ or `GET /api/memory/stats`, `/api/memory/graph`, `/api/memory/lessons`.
 - **Retention** — configure days/scope in Settings. Pinned chats and running runs are preserved. Audit logs live outside project folders (`<db dir>/audit` by default) so purging a project cannot delete them.
 - **Workspaces** — every headless run gets `<workspace>/run_<id>` (or `--runDir`), so one run cannot overwrite another. Run output is never committed by the server.
 
+### Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `MINION_WORKSPACE` | Default working root for runs and chats when the definition sets no `knowledge.workingDirectory` (default: the process cwd). |
+| `MINIONS_DATA_DIR` | Directory holding the credential master key (`./data` by default). Point it at a persisted volume or sealed provider keys cannot be decrypted after a redeploy. |
+| `MINION_API_TOKEN` | Require `Authorization: Bearer <token>` on every `/api/*` request. |
+| `MINION_ALLOWED_HOSTS` | Comma-separated extra host/port pairs accepted by the Host and Origin guards. |
+| `MINION_CHAT_CONCURRENCY` | Concurrent chat turns (default `3`). |
+| `RUN_TURN_TIMEOUT_MS` | Default per-turn budget when neither the API body nor `runtime.turnTimeoutMs` sets one (default 45 min). |
+| `AUDIT_LEVEL` | Default audit verbosity: `minimal`, `default` or `full`. |
+| `PORT` | Port used by `serve` when `--port` is omitted (default `3100`). |
+| `MIMO_API_KEY` (or any name you reference) | Resolved from the definition as `${MIMO_API_KEY}` at run time. The value is never stored in the database. |
+
 Operations:
 
 ```bash
@@ -472,8 +503,34 @@ npm publish --access public   # publish the single artifact (when you are ready)
 ```
 
 Only the root package is published. `web/package.json` is `private`, and the root `files`
-whitelist ships just `dist/` (including `dist/web`) plus the one example definition. There is
-no second package and no separate UI artifact to keep in sync.
+whitelist ships `dist/` (including `dist/web`), the one example definition and `docs/UAT.md`.
+There is no second package and no separate UI artifact to keep in sync.
+
+Release checklist:
+
+```bash
+# 1. clean tree, correct version
+node -p "require('./package.json').name + '@' + require('./package.json').version"
+
+# 2. full verification
+npm ci && npm --prefix web ci
+npm run typecheck && npm run typecheck:web
+npm test && npm run test:web
+
+# 3. inspect exactly what will be published (prepack builds first)
+npm pack --dry-run
+
+# 4. publish the single artifact, then tag the release
+npm publish --access public
+VERSION=$(node -p "require('./package.json').version")
+git tag "v$VERSION" && git push origin "v$VERSION"
+
+# 5. prove the published package, not the working tree
+npx --yes minions-assembler@$VERSION --version
+```
+
+`npm publish` runs `prepack`, so the published `dist/` always matches the version in
+`package.json`. Requires an authenticated npm account with publish rights to the package name.
 
 ### Verified acceptance
 
@@ -488,7 +545,7 @@ repairs and evidence paths are in [`docs/UAT.md`](docs/UAT.md). Summary:
 | CLI generation + independent verifier | PASS, 0 required failures |
 | REST API generation + verifier | PASS, 0 required failures |
 | UI generation (browser-driven) + verifier | PASS, 0 required failures |
-| GitLab pipeline (package, two generate jobs) | Artifact built; verification passed after documented repairs |
+| GitLab pipeline `3032134135` (package, two generate jobs, app check, cockpit check) | PASS — every job green; 72/72 verifier checks on the first attempt and 11/11 cockpit checks, no repair round |
 | Installed npm tarball (CLI + server UI + API) | PASS — `PACKAGED_OK`, `API_PACKAGED_OK`, `UI_PACKAGED_OK` from the final rebuilt tarball |
 
 The release contract checked by the suite:

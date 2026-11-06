@@ -19,7 +19,9 @@
     "typecheck:web": "npm --prefix web run typecheck",
     "test": "vitest run",
     "test:web": "npm --prefix web test",
-    "prepack": "npm run build"
+    "verify": "npm run typecheck && npm run typecheck:web && npm test && npm run test:web",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run verify"
   },
   "files": [
     "dist",
@@ -46,7 +48,8 @@
     "vitest": "^2.1.5"
   },
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.12",
+    "npm": ">=10"
   },
   "keywords": [
     "agents",
