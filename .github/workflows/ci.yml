@@ -1,0 +1,103 @@
+name: CI
+
+# Verification only: typecheck, both test suites, the production build and the exact
+# contents of the npm tarball. Publishing lives in publish.yml and runs on a v* tag.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck, tests and package contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          # The cockpit has its own lockfile; both must be cached or `npm ci` refetches everything.
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install cockpit dependencies
+        run: npm --prefix web ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: |
+          npm run typecheck
+          npm run typecheck:web
+
+      - name: Tests
+        run: |
+          npm test
+          npm run test:web
+
+      - name: Build the single artifact (dist/ + dist/web)
+        run: npm run build
+
+      - name: Pack and assert the tarball contents
+        run: |
+          set -euo pipefail
+          # The build already ran above, so prepack is skipped here: `npm pack --json` would
+          # otherwise interleave lifecycle-script output with the JSON on stdout.
+          rm -f ./*.tgz
+          npm pack --ignore-scripts > /dev/null
+          TARBALL=$(ls -1 ./*.tgz)
+          echo "Tarball: $TARBALL"
+          tar -tzf "$TARBALL" > files.txt
+
+          # The artifact must be self-contained: compiled server + bundled cockpit + one example.
+          for expected in \
+            package/package.json \
+            package/README.md \
+            package/LICENSE \
+            package/dist/cli.js \
+            package/dist/web/index.html \
+            package/examples/full-stack-engineer.agent.json
+          do
+            grep -qx "$expected" files.txt || { echo "::error::missing $expected"; exit 1; }
+          done
+
+          # Exactly one example definition ships.
+          EXAMPLES=$(grep -c '^package/examples/.*\.json$' files.txt || true)
+          test "$EXAMPLES" = "1" || { echo "::error::expected 1 example, found $EXAMPLES"; exit 1; }
+
+          # No source, tests, CI scripts or cockpit sources in the artifact.
+          if grep -qE '^package/(src|tests|ci|web|\.github|scripts)/' files.txt; then
+            echo "::error::non-publishable path leaked into the tarball"
+            grep -E '^package/(src|tests|ci|web|\.github|scripts)/' files.txt | head -20
+            exit 1
+          fi
+
+          # The retired server-rendered UI must stay out.
+          if grep -qE 'src/ui/|routes-ui' files.txt; then
+            echo "::error::legacy /ui module leaked into the tarball"
+            exit 1
+          fi
+
+          echo "files: $(wc -l < files.txt)"
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: "*.tgz"
+          retention-days: 7
+          if-no-files-found: error
