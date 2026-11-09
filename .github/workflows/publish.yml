@@ -122,14 +122,17 @@ jobs:
             echo "Tarball: ${TARBALL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Pack the artifact for the release
+      # Fetch the artifact the registry serves instead of re-packing the tree, so the release
+      # asset is byte-identical to what `npm install` downloads — even on a re-run that skipped
+      # the upload.
+      - name: Fetch the published tarball for the release
         if: ${{ inputs.dry_run != true }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          # A skipped upload means prepack never ran, so build here if dist/ is absent.
-          if [ ! -f dist/cli.js ] || [ ! -f dist/web/index.html ]; then npm run build; fi
           rm -f ./*.tgz
-          npm pack --ignore-scripts > /dev/null
+          npm pack "${PACKAGE_NAME}@${{ steps.registry.outputs.version }}" > /dev/null
           ls -1 ./*.tgz > tarball-name.txt
           cat tarball-name.txt
 
