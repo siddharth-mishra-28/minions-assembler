@@ -151,18 +151,18 @@ npm run test:web
 
 # 2. Build one artifact (prepack rebuilds dist/ and dist/web automatically)
 npm run build
-npm pack                      # -> minions-assembler-1.0.0.tgz
+npm pack                      # -> siddharthm28-minions-assembler-1.0.0.tgz
 
 # 3. Inspect exactly what will be published
 npm pack --dry-run
-tar -tzf minions-assembler-1.0.0.tgz | head -40
-tar -tzf minions-assembler-1.0.0.tgz | grep -E 'dist/web/index.html|examples/full-stack-engineer.agent.json'
-tar -tzf minions-assembler-1.0.0.tgz | grep -E '(^|/)src/ui/|routes-ui' && echo 'legacy UI leaked' || echo 'no legacy UI'
+tar -tzf siddharthm28-minions-assembler-1.0.0.tgz | head -40
+tar -tzf siddharthm28-minions-assembler-1.0.0.tgz | grep -E 'dist/web/index.html|examples/full-stack-engineer.agent.json'
+tar -tzf siddharthm28-minions-assembler-1.0.0.tgz | grep -E '(^|/)src/ui/|routes-ui' && echo 'legacy UI leaked' || echo 'no legacy UI'
 
 # 4. Install the built artifact locally and test all local modes
-npm install -g ./minions-assembler-1.0.0.tgz
-minions-assembler --version
-minions-assembler validate --agentDefinition "$(npm root -g)/minions-assembler/examples/full-stack-engineer.agent.json"
+npm install -g ./siddharthm28-minions-assembler-1.0.0.tgz
+minions-assembler --version              # the bin keeps the short name
+minions-assembler validate --agentDefinition "$(npm root -g)/@siddharthm28/minions-assembler/examples/full-stack-engineer.agent.json"
 minions-assembler serve --port 3100          # cockpit: http://127.0.0.1:3100
 curl -s http://127.0.0.1:3100/api/status
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/ui/dashboard   # 404
@@ -170,22 +170,24 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/ui/dashboard   # 
 # 5. CLI mode against a real provider (reads MIMO_API_KEY from the environment)
 export MIMO_API_KEY='...'
 minions-assembler run \
-  --agentDefinition "$(npm root -g)/minions-assembler/examples/full-stack-engineer.agent.json" \
+  --agentDefinition "$(npm root -g)/@siddharthm28/minions-assembler/examples/full-stack-engineer.agent.json" \
   --task "Reply with exactly: OK" \
   --db ./data/minion.db --approval autopilot --no-stream --output-format json
 
-# 6. Publish the single artifact (when you are ready)
-npm login
-npm publish --dry-run
-npm publish --access public
+# 6. Install the published package the way a user does
+npm install -g @siddharthm28/minions-assembler
+minions-assembler --version
 ```
+
+Publishing is tag-driven: `.github/workflows/publish.yml` runs on `v*` and needs only the
+`NPM_TOKEN` repository secret. The release block is in the README.
 
 To publish to a local registry instead of npmjs.com, point both commands at it:
 
 ```bash
 npx verdaccio --listen 4873
-npm publish ./minions-assembler-1.0.0.tgz --registry http://127.0.0.1:4873
-npm install -g minions-assembler --registry http://127.0.0.1:4873
+npm publish ./siddharthm28-minions-assembler-1.0.0.tgz --registry http://127.0.0.1:4873
+npm install -g @siddharthm28/minions-assembler --registry http://127.0.0.1:4873
 ```
 
 ### GitLab CI mode
@@ -195,7 +197,7 @@ cockpit smoke job. The only build happens in `package`; every later job installs
 
 1. Add a masked CI/CD variable `MIMO_API_KEY` to the project.
 2. Commit the repository and push the branch (or run a pipeline from **CI/CD → Pipelines**).
-3. `package` produces `minions-assembler-1.0.0.tgz`; `generate_backend` / `generate_frontend`
+3. `package` produces one `*.tgz`; `generate_backend` / `generate_frontend`
    install it and run the two phases with `--runDir app`.
 4. `app_check` downloads `app/` (and the tarball), then runs `node ci/verify-app.mjs` with
    Chromium. The generated app is the artifact; inspection screenshots and reports are uploaded
@@ -209,7 +211,7 @@ A standalone job that only generates (no verification) is also shown in the READ
 npm ci
 npm --prefix web ci
 npm pack
-npm install -g ./minions-assembler-1.0.0.tgz
+npm install -g ./siddharthm28-minions-assembler-1.0.0.tgz
 minions-assembler serve --port 3100
 ```
 

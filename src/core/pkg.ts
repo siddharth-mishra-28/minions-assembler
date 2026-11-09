@@ -1,1 +1,1 @@
-export const PKG = { name: 'minions-assembler', version: '1.0.0' };
+export const PKG = { name: '@siddharthm28/minions-assembler', version: '1.0.0' };

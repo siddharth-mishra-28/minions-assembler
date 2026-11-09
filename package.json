@@ -1,8 +1,16 @@
 {
-  "name": "minions-assembler",
+  "name": "@siddharthm28/minions-assembler",
   "version": "1.0.0",
   "description": "Minions Assembler — assemble and run custom GitHub Copilot agents from versioned JSON. One npm artifact: React cockpit + REST API + CLI + GitLab CI, with SQLite audit and long-term memory.",
   "author": "Minions Assembler contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/siddharth-mishra-28/minions-assembler.git"
+  },
+  "homepage": "https://github.com/siddharth-mishra-28/minions-assembler#readme",
+  "bugs": {
+    "url": "https://github.com/siddharth-mishra-28/minions-assembler/issues"
+  },
   "type": "module",
   "bin": {
     "minions-assembler": "./dist/cli.js"

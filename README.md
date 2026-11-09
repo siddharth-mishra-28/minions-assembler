@@ -68,7 +68,7 @@ Prerequisites: **Node.js 22.12+**, npm 10+. Java 17+ and Maven are only needed w
 
 ```bash
 # 1. Install the package globally (or use npx)
-npm install -g minions-assembler
+npm install -g @siddharthm28/minions-assembler
 
 # 2. Start the cockpit
 minions-assembler serve --port 3100
@@ -90,11 +90,14 @@ The server binds `127.0.0.1` by default. See [Security](#security-and-operations
 
 ## One artifact: the npm package
 
-The package is designed to be published and installed as one unit. Until the first `npm publish`, install the tarball directly with `npm install -g ./minions-assembler-1.0.0.tgz`; after that the `npm install -g minions-assembler` shown in the quick start works as written.
+The package is designed to be published and installed as one unit. It is published to npm as
+`@siddharthm28/minions-assembler`, and the installed command is still `minions-assembler`.
+To test a local build before publishing, install the tarball `npm pack` produces
+(`siddharthm28-minions-assembler-<version>.tgz`).
 
 ```bash
 npm pack                      # builds dist/ + dist/web, then creates the tarball
-npm install -g ./minions-assembler-1.0.0.tgz
+npm install -g ./siddharthm28-minions-assembler-1.0.0.tgz
 minions-assembler --version    # 1.0.0
 minions-assembler serve        # SPA + API + Swagger, one port
 ```
@@ -286,7 +289,7 @@ GitLab mode is not another server: it is the same npm artifact, installed global
 Requirements:
 
 - A masked CI variable `MIMO_API_KEY` (or whatever key your definition references).
-- The `package` job is the only place that builds the artifact; every later job installs `./minions-assembler-1.0.0.tgz`. Never rebuild per job.
+- The `package` job is the only place that builds the artifact; every later job installs `./*.tgz`. Never rebuild per job.
 - The runner needs Docker, disk for Maven/npm and a Chromium download. `playwright-core` is already a dev dependency; CI installs Chromium with `npx playwright install --with-deps chromium`.
 - This is the same four-mode contract as local use: UI, API, CLI and pipeline all execute one artifact.
 
@@ -298,7 +301,7 @@ agent:
   timeout: 2h
   before_script:
     - apt-get update -qq && apt-get install -y -qq maven openjdk-17-jdk-headless
-    - npm install -g ./minions-assembler-1.0.0.tgz
+    - npm install -g ./*.tgz
   script:
     - minions-assembler validate --agentDefinition examples/full-stack-engineer.agent.json
     - minions-assembler run --agentDefinition examples/full-stack-engineer.agent.json
@@ -498,39 +501,48 @@ npm run typecheck && npm run typecheck:web
 npm test && npm run test:web
 npm run build
 npm pack --dry-run            # inspect the exact tarball contents
-npm pack                      # build is run by prepack
-npm publish --access public   # publish the single artifact (when you are ready)
 ```
 
 Only the root package is published. `web/package.json` is `private`, and the root `files`
 whitelist ships `dist/` (including `dist/web`), the one example definition and `docs/UAT.md`.
 There is no second package and no separate UI artifact to keep in sync.
 
-Release checklist:
+### Releasing: a tag publishes, GitHub Actions does the work
+
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) publishes on every `v*` tag. The
+repository needs exactly one secret, `NPM_TOKEN`, an npm **automation** token with publish rights
+to the `@siddharthm28` scope (npm → Access Tokens → Generate New Token → Automation).
 
 ```bash
-# 1. clean tree, correct version
-node -p "require('./package.json').name + '@' + require('./package.json').version"
-
-# 2. full verification
-npm ci && npm --prefix web ci
-npm run typecheck && npm run typecheck:web
-npm test && npm run test:web
-
-# 3. inspect exactly what will be published (prepack builds first)
-npm pack --dry-run
-
-# 4. publish the single artifact, then tag the release
-npm publish --access public
+# 1. bump the version and commit it (the tag must match package.json)
+npm version patch --no-git-tag-version
 VERSION=$(node -p "require('./package.json').version")
-git tag "v$VERSION" && git push origin "v$VERSION"
+git commit -am "Release $VERSION"
 
-# 5. prove the published package, not the working tree
-npx --yes minions-assembler@$VERSION --version
+# 2. pushing the tag is what publishes
+VERSION=$(node -p "require('./package.json').version")
+git tag "v$VERSION" && git push origin main "v$VERSION"
+```
+
+The job fails fast if the tag does not match `package.json`, then `npm publish --access public`
+runs `prepublishOnly` (both typechecks and both test suites) and `prepack` (the `dist/` and
+`dist/web` build) itself. Afterwards it asserts the registry really has that version
+(`npm view … version`) and creates the matching GitHub release.
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the same verification on every push
+and pull request, plus the tarball assertions (bundled web build, the one example, no
+`src/`/`tests/`/`web/` leak, no legacy `/ui` module), and never publishes.
+
+Manual release from a laptop, when Actions is not an option:
+
+```bash
+npm ci && npm --prefix web ci
+npm run verify                # typecheck + both suites
+npm publish --access public   # prepublishOnly + prepack run automatically
 ```
 
 `npm publish` runs `prepack`, so the published `dist/` always matches the version in
-`package.json`. Requires an authenticated npm account with publish rights to the package name.
+`package.json`. It requires an authenticated npm account with publish rights to the package name.
 
 ### Verified acceptance
 
