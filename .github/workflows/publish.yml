@@ -73,7 +73,8 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           EXISTS=no
           if BODY=$(curl -fsS "$REGISTRY_URL"); then
-            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{\"name\""; then EXISTS=yes; fi
+            # The versions map keys are the only place a version appears as `"1.0.0":{`.
+            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{"; then EXISTS=yes; fi
           fi
           echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
           echo "registry already has ${VERSION}: ${EXISTS}"
@@ -102,7 +103,7 @@ jobs:
           BODY=""
           for _ in $(seq 1 20); do
             BODY=$(curl -fsS "$REGISTRY_URL" || true)
-            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{\"name\""; then break; fi
+            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{"; then break; fi
             BODY=""
             sleep 15
           done
@@ -110,7 +111,7 @@ jobs:
             echo "::error::${PACKAGE_NAME}@${VERSION} is not served by the registry"
             exit 1
           fi
-          TARBALL=$(printf '%s' "$BODY" | grep -o '"tarball":"[^"]*"' | head -1 | cut -d'"' -f4)
+          TARBALL="https://registry.npmjs.org/${PACKAGE_NAME}/-/${PACKAGE_NAME##*/}-${VERSION}.tgz"
           {
             echo "### Published \`${PACKAGE_NAME}@${VERSION}\`"
             echo
