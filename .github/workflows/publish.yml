@@ -1,8 +1,9 @@
 name: Publish
 
 # A v* tag is the release switch: the tag must match package.json, the full verification runs,
-# and the single tarball is published to npm. workflow_dispatch allows a dry run (or a real
-# publish from the default branch) from the Actions tab.
+# and the single tarball is published to npm. workflow_dispatch allows a dry run from the
+# Actions tab. Re-running a failed job is safe: a version already on the registry is not
+# uploaded twice, so the remaining steps (verify, release) still complete.
 on:
   push:
     tags: ["v*"]
@@ -16,10 +17,15 @@ on:
 permissions:
   contents: write
 
-# Never run two publishes at once; a second one would fail on an already-published version.
+# Never run two publishes at once; a second one would race on the same version.
 concurrency:
   group: npm-publish
   cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: "@siddharthm28/minions-assembler"
+  # Scoped names are percent-encoded in registry URLs.
+  REGISTRY_URL: "https://registry.npmjs.org/@siddharthm28%2Fminions-assembler"
 
 jobs:
   publish:
@@ -54,7 +60,23 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
             exit 1
           fi
-          echo "Publishing $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      # Published already? Re-running a partially failed release must not try to upload twice;
+      # npm rejects that with a 403 and would hide the steps that still need to run.
+      - name: Is this version already on the registry
+        id: registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          EXISTS=no
+          if BODY=$(curl -fsS "$REGISTRY_URL"); then
+            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{\"name\""; then EXISTS=yes; fi
+          fi
+          echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
+          echo "registry already has ${VERSION}: ${EXISTS}"
 
       # prepublishOnly runs the full typecheck + both suites; prepack rebuilds dist/ and dist/web.
       # Nothing is uploaded before those pass.
@@ -63,7 +85,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${{ steps.registry.outputs.exists }}" = "yes" ]; then
+            echo "::notice::${{ env.PACKAGE_NAME }}@${{ steps.registry.outputs.version }} is already published — skipping the upload"
+          elif [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "::notice::dry run — publishing nothing"
             npm publish --dry-run --access public
           else
@@ -72,38 +96,38 @@ jobs:
 
       - name: Verify the registry serves the version
         if: ${{ inputs.dry_run != true }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
-          PUBLISHED=""
-          for _ in $(seq 1 12); do
-            PUBLISHED=$(npm view "@siddharthm28/minions-assembler@${VERSION}" version 2>/dev/null || true)
-            [ "$PUBLISHED" = "$VERSION" ] && break
-            sleep 10
+          VERSION="${{ steps.registry.outputs.version }}"
+          BODY=""
+          for _ in $(seq 1 20); do
+            BODY=$(curl -fsS "$REGISTRY_URL" || true)
+            if printf '%s' "$BODY" | grep -q "\"${VERSION}\":{\"name\""; then break; fi
+            BODY=""
+            sleep 15
           done
-          if [ "$PUBLISHED" != "$VERSION" ]; then
-            echo "::error::npm does not serve version $VERSION yet (got '${PUBLISHED}')"
+          if [ -z "$BODY" ]; then
+            echo "::error::${PACKAGE_NAME}@${VERSION} is not served by the registry"
             exit 1
           fi
-          TARBALL=$(npm view "@siddharthm28/minions-assembler@${VERSION}" dist.tarball)
+          TARBALL=$(printf '%s' "$BODY" | grep -o '"tarball":"[^"]*"' | head -1 | cut -d'"' -f4)
           {
-            echo "### Published \`@siddharthm28/minions-assembler@${VERSION}\`"
+            echo "### Published \`${PACKAGE_NAME}@${VERSION}\`"
             echo
             echo '```bash'
-            echo "npm install -g @siddharthm28/minions-assembler"
+            echo "npm install -g ${PACKAGE_NAME}"
             echo "minions-assembler serve --port 3100"
             echo '```'
             echo
-            echo "Tarball: $TARBALL"
+            echo "Tarball: ${TARBALL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Pack the artifact for the release
         if: ${{ inputs.dry_run != true }}
         run: |
           set -euo pipefail
-          # dist/ was built by prepack during `npm publish`, so skip the lifecycle scripts here.
+          # A skipped upload means prepack never ran, so build here if dist/ is absent.
+          if [ ! -f dist/cli.js ] || [ ! -f dist/web/index.html ]; then npm run build; fi
           rm -f ./*.tgz
           npm pack --ignore-scripts > /dev/null
           ls -1 ./*.tgz > tarball-name.txt
@@ -115,8 +139,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --verify-tag \
-            "$(cat tarball-name.txt)"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::notice::release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --verify-tag \
+              "$(cat tarball-name.txt)"
+          fi

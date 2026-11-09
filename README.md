@@ -526,8 +526,9 @@ git tag "v$VERSION" && git push origin main "v$VERSION"
 
 The job fails fast if the tag does not match `package.json`, then `npm publish --access public`
 runs `prepublishOnly` (both typechecks and both test suites) and `prepack` (the `dist/` and
-`dist/web` build) itself. Afterwards it asserts the registry really has that version
-(`npm view … version`) and creates the matching GitHub release.
+`dist/web` build) itself. Afterwards it reads the version back from the registry and creates the
+matching GitHub release. Re-running a failed release is safe: a version that is already on the
+registry is not uploaded twice, so the verification and the release still complete.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the same verification on every push
 and pull request, plus the tarball assertions (bundled web build, the one example, no
